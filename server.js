@@ -55,8 +55,12 @@ function generateContentHash(content) {
 async function runScraper() {
   console.log('[Scraper] Starting...');
   
+  // Usar chromium del sistema (en Railway con Dockerfile está en /usr/bin/chromium)
+  const chromiumPath = process.env.CHROMIUM_PATH || '/usr/bin/chromium';
+  
   const browser = await chromium.launch({ 
     headless: true,
+    executablePath: chromiumPath,
     args: ['--no-sandbox', '--disable-setuid-sandbox']
   });
   
