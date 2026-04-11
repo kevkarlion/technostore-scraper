@@ -30,9 +30,10 @@ const SCRAPER_CONFIG = {
   password: process.env.SUPPLIER_PASSWORD || '123456',
   selectors: {
     login: {
-      emailInputSelector: '#ContentPlaceHolder1_txtUsuario, #txtUsuario',
-      passwordInputSelector: '#ContentPlaceHolder1_txtClave, #txtClave',
-      submitButtonSelector: '#ContentPlaceHolder1_btnIngresar, #btnIngresar'
+      // Múltiples selectores para el usuario
+      emailInputSelector: '#ContentPlaceHolder1_txtUsuario, #txtUsuario, input[name*="Usuario"], input#usuario, #username',
+      passwordInputSelector: '#ContentPlaceHolder1_txtClave, #txtClave, input[name*="Clave"], input#password, #password',
+      submitButtonSelector: '#ContentPlaceHolder1_btnIngresar, #btnIngresar, input[type="submit"], button[type="submit"]'
     }
   }
 };
@@ -70,10 +71,26 @@ async function runScraper() {
     const context = await browser.newContext();
     const page = await context.newPage();
     
-    await page.goto(SCRAPER_CONFIG.loginUrl, { waitUntil: 'networkidle' });
-    await page.fill(SCRAPER_CONFIG.selectors.login.emailInputSelector, SCRAPER_CONFIG.email);
-    await page.fill(SCRAPER_CONFIG.selectors.login.passwordInputSelector, SCRAPER_CONFIG.password);
-    await page.click(SCRAPER_CONFIG.selectors.login.submitButtonSelector);
+    await page.goto(SCRAPER_CONFIG.loginUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    
+    // Wait a bit for page to fully load
+    await page.waitForTimeout(2000);
+    
+    // Debug: print page title
+    const title = await page.title();
+    console.log('[Scraper] Page title:', title);
+    
+    // Try different selectors for login
+    const emailInput = await page.locator('input[name*="Usuario"], input#txtUsuario, #ContentPlaceHolder1_txtUsuario, input[type="text"]').first();
+    const passwordInput = await page.locator('input[name*="Clave"], input#txtClave, #ContentPlaceHolder1_txtClave, input[type="password"]').first();
+    const submitBtn = await page.locator('input[type="submit"], button[type="submit"], #btnIngresar, #ContentPlaceHolder1_btnIngresar').first();
+    
+    console.log('[Scraper] Found form elements, filling...');
+    
+    await emailInput.fill(SCRAPER_CONFIG.email);
+    await passwordInput.fill(SCRAPER_CONFIG.password);
+    await submitBtn.click();
+    
     await page.waitForLoadState('networkidle');
     
     // Select branch
