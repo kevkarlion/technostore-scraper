@@ -2,7 +2,8 @@
   "name": "scraper-server",
   "version": "1.0.0",
   "main": "server.js",
-  "scripts": {
+"scripts": {
+    "postinstall": "npx playwright install chromium",
     "start": "node server.js",
     "dev": "nodemon server.js"
   },
