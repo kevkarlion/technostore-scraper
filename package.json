@@ -1,6 +1,6 @@
 {
   "name": "scraper-server",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "main": "server.ts",
   "scripts": {
     "postinstall": "npx playwright install chromium",
