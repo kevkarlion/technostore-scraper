@@ -496,18 +496,20 @@ async function runIncrementalScraper() {
       
       const batchPromises = batch.map(async (cat) => {
         try {
-          return await scrapeCategory(page, cat.id, cat.idsubrubro1);
+          const result = await scrapeCategory(page, cat.id, cat.idsubrubro1);
+          return { ...result, categoryId: cat.id };
         } catch (e) {
           console.log(`[Incremental] Error ${cat.id}:`, e.message);
-          return { products: [], scrapedIds: [] };
+          return { products: [], scrapedIds: [], categoryId: cat.id };
         }
       });
       
       const batchResults = await Promise.all(batchPromises);
       
       for (const r of batchResults) {
+        const catId = r.categoryId;
+        
         for (const product of r.products) {
-          const catId = r.products[0] ? CATEGORIES.find(c => c.id === preCheckResult.changed.find(c => c))?.id : 'unknown';
           const result = await saveProduct(product, catId);
           if (result.created) results.created++;
           else if (result.updated) results.updated++;
