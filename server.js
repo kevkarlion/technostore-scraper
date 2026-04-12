@@ -503,14 +503,25 @@ async function runIncrementalScraper() {
     const loginPage = await context.newPage();
     
     await loginPage.goto(SCRAPER_CONFIG.loginUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-    await loginPage.waitForTimeout(2000); // Wait for page to load
+    await loginPage.waitForTimeout(3000); // Wait for page to fully load
     
-    // Wait for inputs to appear
-    await loginPage.waitForSelector('#txtUsuario, #ContentPlaceHolder1_txtUsuario', { timeout: 10000 }).catch(() => {});
+    // Find all visible inputs (more robust)
+    const allInputs = await loginPage.locator('input:not([type="hidden"]):visible').all();
+    console.log('[Incremental] Found', allInputs.length, 'visible inputs');
     
-    await loginPage.fill(SCRAPER_CONFIG.selectors.login.emailInputSelector, SCRAPER_CONFIG.email);
-    await loginPage.fill(SCRAPER_CONFIG.selectors.login.passwordInputSelector, SCRAPER_CONFIG.password);
-    await loginPage.click(SCRAPER_CONFIG.selectors.login.submitButtonSelector);
+    if (allInputs.length >= 2) {
+      // Fill first visible input (email) and second visible input (password)
+      await allInputs[0].fill(SCRAPER_CONFIG.email);
+      await allInputs[1].fill(SCRAPER_CONFIG.password);
+      console.log('[Incremental] Filled inputs directly');
+      
+      // Find submit button
+      const submitBtn = await loginPage.locator('input[type="submit"], button').first();
+      await submitBtn.click();
+    } else {
+      throw new Error('Could not find login inputs');
+    }
+    
     await loginPage.waitForLoadState('networkidle');
     
     // Select branch
