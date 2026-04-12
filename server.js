@@ -98,6 +98,23 @@ const CATEGORIES = JOTAKP_CATEGORIES.filter(c => c.idsubrubro1 > 0).map(c => ({
 const MAX_PARALLEL_PAGES = 2;
 const MAX_DETAIL_PAGES = 3; // Máximo páginas por categoría
 
+// Retry helper para requests que fallan con ERR_ABORTED
+async function withRetry(fn, maxRetries = 2) {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (e) {
+      if (attempt === maxRetries) throw e;
+      if (e.message && e.message.includes('ERR_ABORTED')) {
+        console.log('[Retry] Got ERR_ABORTED, retrying...', attempt, '/', maxRetries);
+        await new Promise(r => setTimeout(r, 2000));
+      } else {
+        throw e;
+      }
+    }
+  }
+}
+
 // ============================================
 // FUNCIONES DEL SCRAPER
 // ============================================
@@ -108,12 +125,22 @@ function generateContentHash(content) {
 
 // Pre-check: obtener hash de primera página
 async function getCategoryPreview(page, idsubrubro1, baseUrl) {
-  try {
-    const url = `${baseUrl}/buscar.aspx?idsubrubro1=${idsubrubro1}&pag=1`;
+  const url = `${baseUrl}/buscar.aspx?idsubrubro1=${idsubrubro1}&pag=1`;
+  
+  // Retry wrapper para ERR_ABORTED
+  const loadWithRetry = async () => {
     await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
-    
-    // Wait for prices
-    await page.waitForSelector("div:has-text('U$D')", { timeout: 10000 }).catch(() => {});
+  };
+  
+  try {
+    await withRetry(loadWithRetry, 2);
+  } catch (e) {
+    console.error('[Pre-check] Error loading:', e.message);
+    return null;
+  }
+  
+  // Wait for prices (como el original)
+  await page.waitForSelector("div:has-text('U$D')", { timeout: 10000 }).catch(() => {});
     
     const content = await page.content();
     const contentHash = generateContentHash(content);
@@ -208,7 +235,12 @@ async function scrapeCategory(page, categoryId, idsubrubro1) {
     const url = `${SCRAPER_CONFIG.baseUrl}/buscar.aspx?idsubrubro1=${idsubrubro1}&pag=${pageNum}`;
     
     try {
-      await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
+      // Retry wrapper para ERR_ABORTED
+      await withRetry(async () => {
+        await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
+      }, 2);
+      
+      // Wait for products to load (como el original)
       await page.waitForSelector('a[href*="articulo.aspx?id="]', { timeout: 5000 }).catch(() => {});
       
       const items = await page.locator('a[href*="articulo.aspx?id="]').all();
@@ -275,9 +307,10 @@ async function scrapeCategory(page, categoryId, idsubrubro1) {
               }
             } catch {}
             
-            // Back to list
+            // Back to list - esperar como el original
             await page.goBack();
             await page.waitForLoadState('networkidle').catch(() => {});
+            await page.waitForSelector('a[href*="articulo.aspx?id="]', { timeout: 5000 }).catch(() => {});
             
             return { externalId, name, price, stock, description, sku, imageUrls: images };
           } catch (e) {
@@ -396,57 +429,57 @@ async function runIncrementalScraper() {
   };
   
   try {
-    // Login
+    // Login - usando selectores específicos como el original
     console.log('[Incremental] Login...');
     console.log('[Incremental] Login URL:', SCRAPER_CONFIG.loginUrl);
     const context = await browser.newContext();
-    const page = await context.newPage();
+    const loginPage = await context.newPage();
     
-    await page.goto(SCRAPER_CONFIG.loginUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-    await page.waitForTimeout(5000); // Wait for page to fully load
+    await loginPage.goto(SCRAPER_CONFIG.loginUrl, { waitUntil: 'networkidle', timeout: 30000 });
+    await loginPage.waitForTimeout(2000); // Esperar carga completa
     
-    console.log('[Incremental] Finding all inputs on page...');
+    console.log('[Incremental] Filling login form...');
     
-    // Get all VISIBLE inputs on the page (not hidden)
-    const allInputs = await page.locator('input:not([type="hidden"]):visible').all();
-    console.log('[Incremental] Found', allInputs.length, 'visible inputs');
+    // Usar selectores específicos del config original
+    const emailInput = await loginPage.$(SCRAPER_CONFIG.selectors.login.emailInputSelector);
+    const passwordInput = await loginPage.$(SCRAPER_CONFIG.selectors.login.passwordInputSelector);
+    const submitBtn = await loginPage.$(SCRAPER_CONFIG.selectors.login.submitButtonSelector);
     
-    if (allInputs.length >= 2) {
-      // Fill first visible input (email) and second visible input (password)
-      await allInputs[0].fill(SCRAPER_CONFIG.email);
-      await allInputs[1].fill(SCRAPER_CONFIG.password);
-      console.log('[Incremental] Filled inputs directly');
-      
-      // Try to find and click submit button
-      const submitBtn = await page.locator('input[type="submit"], button').first();
-      await submitBtn.click();
-      console.log('[Incremental] Clicked submit');
-    } else {
-      // Fallback: try to find by type
-      const emailInput = await page.locator('input[type="text"]').first();
-      const passInput = await page.locator('input[type="password"]').first();
+    if (emailInput && passwordInput && submitBtn) {
       await emailInput.fill(SCRAPER_CONFIG.email);
-      await passInput.fill(SCRAPER_CONFIG.password);
-      console.log('[Incremental] Filled using type selectors');
-      
-      const submitBtn = await page.locator('input[type="submit"], button').first();
+      await passwordInput.fill(SCRAPER_CONFIG.password);
       await submitBtn.click();
+      console.log('[Incremental] Clicked submit with selectors');
+    } else {
+      // Fallback: buscar por type
+      const allInputs = await loginPage.locator('input:not([type="hidden"]):visible').all();
+      if (allInputs.length >= 2) {
+        await allInputs[0].fill(SCRAPER_CONFIG.email);
+        await allInputs[1].fill(SCRAPER_CONFIG.password);
+        const btn = await loginPage.locator('input[type="submit"], button').first();
+        await btn.click();
+        console.log('[Incremental] Fallback: filled inputs directly');
+      }
     }
     
-    await page.waitForLoadState('networkidle');
-    console.log('[Incremental] Logged in');
+    await loginPage.waitForLoadState('networkidle');
     
-    // Select branch
-    await page.waitForTimeout(2000);
+    // Select branch - esperar y usar waitForLoadState como el original
+    await loginPage.waitForTimeout(2000);
     try {
-      const branchSelect = await page.$('#ContentPlaceHolder1_ddlSucursal, #ddlSucursal');
+      const branchSelect = await loginPage.$('#ContentPlaceHolder1_ddlSucursal, #ddlSucursal');
       if (branchSelect) {
         await branchSelect.selectOption({ index: 1 });
-        await page.waitForLoadState('networkidle');
+        await loginPage.waitForLoadState('networkidle');
+        console.log('[Incremental] Branch selected');
       }
-    } catch {}
+    } catch { /* ignore */ }
     
-    console.log('[Incremental] Logged in');
+    console.log('[Incremental] Logged in successfully');
+    
+    // Cerrar login page y crear nueva página limpia para pre-check (como el original)
+    await loginPage.close();
+    const page = await context.newPage();
     
     // Pre-check de todas las categorías
     const preCheckResult = await preCheckCategories(CATEGORIES, page);
