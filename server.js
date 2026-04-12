@@ -502,7 +502,12 @@ async function runIncrementalScraper() {
     const context = await browser.newContext();
     const loginPage = await context.newPage();
     
-    await loginPage.goto(SCRAPER_CONFIG.loginUrl, { waitUntil: 'networkidle' });
+    await loginPage.goto(SCRAPER_CONFIG.loginUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await loginPage.waitForTimeout(2000); // Wait for page to load
+    
+    // Wait for inputs to appear
+    await loginPage.waitForSelector('#txtUsuario, #ContentPlaceHolder1_txtUsuario', { timeout: 10000 }).catch(() => {});
+    
     await loginPage.fill(SCRAPER_CONFIG.selectors.login.emailInputSelector, SCRAPER_CONFIG.email);
     await loginPage.fill(SCRAPER_CONFIG.selectors.login.passwordInputSelector, SCRAPER_CONFIG.password);
     await loginPage.click(SCRAPER_CONFIG.selectors.login.submitButtonSelector);
