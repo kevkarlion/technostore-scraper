@@ -127,20 +127,14 @@ function generateContentHash(content) {
 async function getCategoryPreview(page, idsubrubro1, baseUrl) {
   const url = `${baseUrl}/buscar.aspx?idsubrubro1=${idsubrubro1}&pag=1`;
   
-  // Retry wrapper para ERR_ABORTED
-  const loadWithRetry = async () => {
-    await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
-  };
-  
   try {
-    await withRetry(loadWithRetry, 2);
-  } catch (e) {
-    console.error('[Pre-check] Error loading:', e.message);
-    return null;
-  }
-  
-  // Wait for prices (como el original)
-  await page.waitForSelector("div:has-text('U$D')", { timeout: 10000 }).catch(() => {});
+    // Retry wrapper para ERR_ABORTED
+    await withRetry(async () => {
+      await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
+    }, 2);
+    
+    // Wait for prices (como el original)
+    await page.waitForSelector("div:has-text('U$D')", { timeout: 10000 }).catch(() => {});
     
     const content = await page.content();
     const contentHash = generateContentHash(content);
