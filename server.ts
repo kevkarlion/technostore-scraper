@@ -249,9 +249,9 @@ async function runIncrementalScraper(forceFullScrape: boolean = false) {
     const context = await browser.newContext();
     const page = await context.newPage();
     await page.goto(SCRAPER_CONFIG.loginUrl, { waitUntil: 'networkidle' });
-    await page.fill(SCRAPER_CONFIG.selectors.emailInputSelector, SCRAPER_CONFIG.email);
-    await page.fill(SCRAPER_CONFIG.selectors.passwordInputSelector, SCRAPER_CONFIG.password);
-    await page.click(SCRAPER_CONFIG.selectors.submitButtonSelector);
+    await page.fill(SCRAPER_CONFIG.selectors.login.emailInputSelector, SCRAPER_CONFIG.email);
+    await page.fill(SCRAPER_CONFIG.selectors.login.passwordInputSelector, SCRAPER_CONFIG.password);
+    await page.click(SCRAPER_CONFIG.selectors.login.submitButtonSelector);
     await page.waitForLoadState('networkidle');
     await page.waitForTimeout(2000);
     try {
