@@ -7,7 +7,9 @@ const crypto = require('crypto');
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// MongoDB connection
+// ============================================
+// MONGODB CONNECTION
+// ============================================
 const MONGO_URI = process.env.MONGO_URI;
 const DB_NAME = process.env.DB_NAME || 'technostore';
 
@@ -31,9 +33,8 @@ async function connectDB() {
 }
 
 // ============================================
-// CONFIGURACIÓN (adaptada de config.ts)
+// CONFIG (extraído de config.ts)
 // ============================================
-// Force HTTPS for all URLs
 function toHttps(url) {
   return url.replace(/^http:/, 'https:');
 }
@@ -43,6 +44,7 @@ const SCRAPER_CONFIG = {
   loginUrl: toHttps(process.env.SUPPLIER_LOGIN_URL || 'https://jotakp.dyndns.org/loginext.aspx'),
   email: process.env.SUPPLIER_EMAIL || '20418216795',
   password: process.env.SUPPLIER_PASSWORD || '123456',
+  delayMs: parseInt(process.env.SUPPLIER_DELAY_MS || '3000'),
   selectors: {
     login: {
       emailInputSelector: '#ContentPlaceHolder1_txtUsuario, #txtUsuario',
@@ -52,7 +54,9 @@ const SCRAPER_CONFIG = {
   }
 };
 
-// Todas las categorías (de config.ts)
+// ============================================
+// CATEGORIES (extraído de config.ts)
+// ============================================
 const JOTAKP_CATEGORIES = [
   { id: 'almacenamiento', name: 'Almacenamiento', idsubrubro1: 0, parentId: null },
   { id: 'carry-caddy-disk', name: 'Carry-Caddy Disk', idsubrubro1: 100, parentId: 'almacenamiento' },
@@ -88,7 +92,6 @@ const JOTAKP_CATEGORIES = [
   { id: 'cargadores-energia', name: 'Cargadores', idsubrubro1: 51, parentId: 'energia' },
 ];
 
-// Solo categorías con idsubrubro1 > 0
 const CATEGORIES = JOTAKP_CATEGORIES.filter(c => c.idsubrubro1 > 0).map(c => ({
   id: c.id,
   idsubrubro1: c.idsubrubro1,
@@ -96,51 +99,133 @@ const CATEGORIES = JOTAKP_CATEGORIES.filter(c => c.idsubrubro1 > 0).map(c => ({
 }));
 
 const MAX_PARALLEL_PAGES = 2;
-const MAX_DETAIL_PAGES = 3; // Máximo páginas por categoría
-
-// Retry helper para requests que fallan con ERR_ABORTED
-async function withRetry(fn, maxRetries = 2) {
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    try {
-      return await fn();
-    } catch (e) {
-      if (attempt === maxRetries) throw e;
-      if (e.message && e.message.includes('ERR_ABORTED')) {
-        console.log('[Retry] Got ERR_ABORTED, retrying...', attempt, '/', maxRetries);
-        await new Promise(r => setTimeout(r, 2000));
-      } else {
-        throw e;
-      }
-    }
-  }
-}
+const MAX_DETAIL_PAGES = 3;
 
 // ============================================
-// FUNCIONES DEL SCRAPER
+// HELPER FUNCTIONS (del original)
 // ============================================
 
 function generateContentHash(content) {
   return crypto.createHash('md5').update(content).digest('hex');
 }
 
-// Pre-check: obtener hash de primera página
-async function getCategoryPreview(page, idsubrubro1, baseUrl) {
-  const url = `${baseUrl}/buscar.aspx?idsubrubro1=${idsubrubro1}&pag=1`;
+async function shortDelay() {
+  await new Promise(r => setTimeout(r, SCRAPER_CONFIG.delayMs || 3000));
+}
+
+// ============================================
+// SCRAPER STATE REPOSITORY (adaptado del original)
+// ============================================
+
+const scraperStateRepository = {
+  async ensureIndexes() {
+    await db.collection('scraperStates').createIndex({ categoryId: 1 }, { unique: true });
+  },
   
-  try {
-    // Retry wrapper para ERR_ABORTED
-    await withRetry(async () => {
-      await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
-    }, 2);
+  async hasChanged(categoryId, contentHash) {
+    const existing = await db.collection('scraperStates').findOne({ categoryId });
+    return !existing || existing.contentHash !== contentHash;
+  },
+  
+  async saveSnapshot(data) {
+    await db.collection('scraperStates').updateOne(
+      { categoryId: data.categoryId },
+      { $set: { ...data, capturedAt: new Date() } },
+      { upsert: true }
+    );
+  },
+  
+  async getAllCategoryStates() {
+    return await db.collection('scraperStates').find().toArray();
+  },
+  
+  async upsertCategoryState(data) {
+    await db.collection('scraperStates').updateOne(
+      { categoryId: data.categoryId },
+      { $set: { ...data, lastScrapeAt: data.lastScrapeAt } },
+      { upsert: true }
+    );
+  }
+};
+
+// ============================================
+// PRODUCT REPOSITORY (adaptado del original)
+// ============================================
+
+const productRepository = {
+  async ensureIndexes() {
+    await db.collection('products').createIndex({ externalId: 1, supplier: 1 }, { unique: true });
+  },
+  
+  async findByExternalId(externalId, supplier) {
+    return await db.collection('products').findOne({ externalId, supplier });
+  },
+  
+  async upsert(productData) {
+    const existing = await this.findByExternalId(productData.externalId, productData.supplier);
     
-    // Wait for prices (como el original)
+    if (existing) {
+      const changed = {};
+      for (const [key, value] of Object.entries(productData)) {
+        if (key !== 'externalId' && key !== 'supplier') {
+          if (JSON.stringify(existing[key]) !== JSON.stringify(value)) {
+            changed[key] = value;
+          }
+        }
+      }
+      
+      if (Object.keys(changed).length > 0) {
+        await db.collection('products').updateOne(
+          { _id: existing._id },
+          { $set: { ...changed, updatedAt: new Date() } }
+        );
+        return { created: false, updated: true };
+      }
+      return { created: false, updated: false };
+    } else {
+      await db.collection('products').insertOne({
+        ...productData,
+        status: 'active',
+        currency: 'USD',
+        attributes: [],
+        createdAt: new Date(),
+        updatedAt: new Date()
+      });
+      return { created: true, updated: false };
+    }
+  },
+  
+  async markDiscontinued(categoryId, scrapedIds) {
+    const result = await db.collection('products').updateMany(
+      { 
+        categories: categoryId,
+        supplier: 'jotakp',
+        externalId: { $nin: scrapedIds }
+      },
+      { $set: { status: 'discontinued', discontinuedAt: new Date() } }
+    );
+    return result.modifiedCount;
+  }
+};
+
+// ============================================
+// CATEGORY PREVIEW (del original - exact copy)
+// ============================================
+
+async function getCategoryPreview(page, idsubrubro1, baseUrl) {
+  try {
+    const url = `${baseUrl}/buscar.aspx?idsubrubro1=${idsubrubro1}&pag=1`;
+    await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
+    
+    // Wait for prices to load (dynamic content)
     await page.waitForSelector("div:has-text('U$D')", { timeout: 10000 }).catch(() => {});
     
+    // Get content for hash
     const content = await page.content();
     const contentHash = generateContentHash(content);
     
-    // Get product IDs
-    const items = await page.locator('a[href*="articulo.aspx?id="]').all();
+    // Contar productos (links con articulo.aspx?id=)
+    const items = await page.locator("a[href*='articulo.aspx?id=']").all();
     const productIds = [];
     const seenIds = new Set();
     
@@ -155,122 +240,118 @@ async function getCategoryPreview(page, idsubrubro1, baseUrl) {
       }
     }
     
-    return { contentHash, productCount: productIds.length, productIds };
-  } catch (e) {
-    console.error('[Pre-check] Error:', e.message);
+    // Extraer primer precio USD para referencia
+    let firstPriceUsd;
+    const firstItemText = items[0] ? await items[0].textContent() : null;
+    if (firstItemText) {
+      const priceMatch = firstItemText.match(/U\$D\s+([\d.,]+)/);
+      if (priceMatch) {
+        firstPriceUsd = priceMatch[1];
+      }
+    }
+    
+    return {
+      contentHash,
+      productCount: productIds.length,
+      productIds,
+      firstPriceUsd
+    };
+  } catch (error) {
+    console.error(`[Incremental] Error getting preview for idsubrubro1=${idsubrubro1}:`, error);
     return null;
   }
 }
 
-// Pre-check de todas las categorías (paralelo)
-async function preCheckCategories(categories, page) {
-  const result = { changed: [], unchanged: [], errors: [] };
+// ============================================
+// SCRAPER PRODUCTS (del original - exact copy)
+// ============================================
+
+async function scrapeProductDetail(page, productUrl) {
+  await page.goto(productUrl, { waitUntil: 'networkidle', timeout: 30000 });
   
-  console.log('[Pre-check] Checking', categories.length, 'categories...');
+  const product = {
+    description: '',
+    stock: 0,
+    sku: '',
+    imageUrls: []
+  };
   
-  for (let i = 0; i < categories.length; i += MAX_PARALLEL_PAGES) {
-    const batch = categories.slice(i, i + MAX_PARALLEL_PAGES);
-    console.log(`[Pre-check] Batch ${Math.floor(i/MAX_PARALLEL_PAGES) + 1}: ${batch.map(c => c.name).join(', ')}`);
-    
-    const batchPromises = batch.map(async (cat) => {
-      const preview = await getCategoryPreview(page, cat.idsubrubro1, SCRAPER_CONFIG.baseUrl);
-      
-      if (!preview) return { categoryId: cat.id, status: 'error' };
-      
-      // Check if changed in DB
-      const existing = await db.collection('scraperStates').findOne({ categoryId: cat.id });
-      const hasChanged = !existing || existing.contentHash !== preview.contentHash;
-      
-      // Save snapshot
-      await db.collection('scraperStates').updateOne(
-        { categoryId: cat.id },
-        { 
-          $set: { 
-            categoryId: cat.id, 
-            idsubrubro1: cat.idsubrubro1, 
-            contentHash: preview.contentHash,
-            productCount: preview.productCount,
-            productIds: preview.productIds,
-            capturedAt: new Date()
-          }
-        },
-        { upsert: true }
-      );
-      
-      return { categoryId: cat.id, status: hasChanged ? 'changed' : 'unchanged', count: preview.productCount };
-    });
-    
-    const batchResults = await Promise.all(batchPromises);
-    
-    for (const r of batchResults) {
-      if (r.status === 'changed') {
-        result.changed.push(r.categoryId);
-        console.log(`[Pre-check] Changed: ${r.categoryId} (${r.count} products)`);
-      } else if (r.status === 'unchanged') {
-        result.unchanged.push(r.categoryId);
-      } else {
-        result.errors.push(r.categoryId);
-      }
+  // Description
+  try {
+    const desc = await page.$('#ContentPlaceHolder1_lblDescripcion');
+    if (desc) product.description = await desc.textContent() || '';
+  } catch {}
+  
+  // Stock
+  try {
+    const stockEl = await page.$('#ContentPlaceHolder1_lblStock');
+    if (stockEl) {
+      const stockText = await stockEl.textContent() || '';
+      const m = stockText.match(/(\d+)/);
+      product.stock = m ? parseInt(m[1]) : 0;
     }
-  }
+  } catch {}
   
-  console.log('[Pre-check] Complete:', result.changed.length, 'changed,', result.unchanged.length, 'unchanged,', result.errors.length, 'errors');
-  return result;
+  // SKU
+  try {
+    const skuEl = await page.$('#ContentPlaceHolder1_lblCodigo');
+    if (skuEl) product.sku = await skuEl.textContent() || '';
+  } catch {}
+  
+  // Images
+  try {
+    const imgs = await page.locator('div.tg-img-overlay.artImg').all();
+    for (const img of imgs.slice(0, 5)) {
+      const src = await img.getAttribute('data-src');
+      if (src && src.includes('imagenes/')) product.imageUrls.push(src);
+    }
+  } catch {}
+  
+  return product;
 }
 
-// Scrapear productos de una categoría (detalle)
-// COMO EL ORIGINAL: usar páginas separadas para cada producto
-async function scrapeCategory(context, page, categoryId, idsubrubro1) {
-  console.log(`[Scraper] Scraping: ${categoryId}`);
+async function scrapeCategoryProducts(categoryId, idsubrubro1, baseUrl, browser, context) {
+  const allProducts = [];
   
-  const products = [];
-  const scrapedIds = [];
-  
-  // Cargar la lista de la categoría
-  const listUrl = `${SCRAPER_CONFIG.baseUrl}/buscar.aspx?idsubrubro1=${idsubrubro1}&pag=1`;
-  
-  try {
-    await withRetry(async () => {
-      await page.goto(listUrl, { waitUntil: 'networkidle', timeout: 45000 }); // Timeout como el original
-    }, 2);
-  } catch (e) {
-    console.log(`[Scraper] Error loading list:`, e.message);
-    return { products: [], scrapedIds: [] };
-  }
-  
-  // Loop por páginas (1, 2, 3)
+  // Loop through pages
   for (let pageNum = 1; pageNum <= MAX_DETAIL_PAGES; pageNum++) {
+    const url = `${baseUrl}/buscar.aspx?idsubrubro1=${idsubrubro1}&pag=${pageNum}`;
+    
+    const page = await context.newPage();
+    
     try {
-      if (pageNum > 1) {
-        // Navegar a la siguiente página
-        await page.goto(`${SCRAPER_CONFIG.baseUrl}/buscar.aspx?idsubrubro1=${idsubrubro1}&pag=${pageNum}`, { 
-          waitUntil: 'networkidle', 
-          timeout: 45000 
-        });
-      }
+      await page.goto(url, { waitUntil: 'networkidle', timeout: 45000 });
+      await shortDelay();
       
-      await page.waitForSelector('a[href*="articulo.aspx?id="]', { timeout: 10000 }).catch(() => {});
-      
-      // Obtener TODOS los links de productos de la página
-      const itemLinks = await page.locator('a[href*="articulo.aspx?id="]').all();
-      
-      if (itemLinks.length === 0) {
-        console.log(`[Scraper] Page ${pageNum}: no products`);
+      // Check if there are products
+      const content = await page.content();
+      if (!content.includes('articulo.aspx?id=')) {
+        await page.close();
         break;
       }
       
-      console.log(`[Scraper] Page ${pageNum}: ${itemLinks.length} products`);
+      const productLinks = await page.locator("a[href*='articulo.aspx?id=']").all();
       
-      // Para cada producto, crear una NUEVA PÁGINA (como el original)
-      for (let i = 0; i < itemLinks.length; i++) {
-        try {
-          const item = itemLinks[i];
-          const href = await item.getAttribute('href');
-          const fullText = await item.textContent();
+      if (productLinks.length === 0) {
+        await page.close();
+        break;
+      }
+      
+      console.log(`[Scraper] Page ${pageNum}: ${productLinks.length} products`);
+      
+      // Process products in PARALLEL (like original)
+      for (let i = 0; i < productLinks.length; i += MAX_PARALLEL_PAGES) {
+        const batch = productLinks.slice(i, i + MAX_PARALLEL_PAGES);
+        
+        const batchPromises = batch.map(async (link) => {
+          const href = await link.getAttribute('href');
+          const fullText = await link.textContent();
+          
+          if (!href) return null;
           
           const idMatch = href.match(/id=(\d+)/);
           const externalId = idMatch ? idMatch[1] : null;
-          if (!externalId) continue;
+          if (!externalId) return null;
           
           // Get price from text
           let price = null;
@@ -279,142 +360,125 @@ async function scrapeCategory(context, page, categoryId, idsubrubro1) {
           
           // Get name
           let name = fullText.replace(/U\$D[\s\d.,+IVA%]+$/, '').trim();
-          if (!name || name.length < 3) continue;
+          if (!name || name.length < 3) return null;
           
-          // Crear una NUEVA PÁGINA para el detalle (COMO EL ORIGINAL)
+          // Create NEW PAGE for detail (like original)
           const detailPage = await context.newPage();
           
           try {
-            const detailUrl = `${SCRAPER_CONFIG.baseUrl}/articulo.aspx?id=${externalId}`;
-            await detailPage.goto(detailUrl, { waitUntil: 'networkidle', timeout: 45000 });
+            const detailUrl = `${baseUrl}/articulo.aspx?id=${externalId}`;
+            const details = await scrapeProductDetail(detailPage, detailUrl);
             
-            // Get details
-            let description = '';
-            let stock = 0;
-            let sku = '';
-            let images = [];
-            
-            try {
-              const desc = await detailPage.$('#ContentPlaceHolder1_lblDescripcion');
-              if (desc) description = await desc.textContent() || '';
-            } catch {}
-            
-            try {
-              const stockEl = await detailPage.$('#ContentPlaceHolder1_lblStock');
-              if (stockEl) {
-                const stockText = await stockEl.textContent() || '';
-                const m = stockText.match(/(\d+)/);
-                stock = m ? parseInt(m[1]) : 0;
-              }
-            } catch {}
-            
-            try {
-              const skuEl = await detailPage.$('#ContentPlaceHolder1_lblCodigo');
-              if (skuEl) sku = await skuEl.textContent() || '';
-            } catch {}
-            
-            try {
-              const imgs = await detailPage.locator('div.tg-img-overlay.artImg').all();
-              for (const img of imgs.slice(0, 5)) {
-                const src = await img.getAttribute('data-src');
-                if (src && src.includes('imagenes/')) images.push(src);
-              }
-            } catch {}
-            
-            products.push({ externalId, name, price, stock, description, sku, imageUrls: images });
-            scrapedIds.push(externalId);
+            return {
+              externalId,
+              name,
+              price,
+              ...details
+            };
           } catch (e) {
             console.log(`[Scraper] Error detail ${externalId}:`, e.message);
+            return null;
           } finally {
-            // CERRAR la página inmediatamente (COMO EL ORIGINAL)
             try { await detailPage.close(); } catch {}
           }
-        } catch (e) {
-          console.log(`[Scraper] Error product:`, e.message);
+        });
+        
+        const batchResults = await Promise.all(batchPromises);
+        
+        for (const p of batchResults) {
+          if (p) allProducts.push(p);
         }
       }
     } catch (e) {
       console.log(`[Scraper] Error page ${pageNum}:`, e.message);
+    } finally {
+      try { await page.close(); } catch {}
     }
   }
   
-  return { products, scrapedIds };
-}
-
-// Guardar producto (atomic upsert)
-async function saveProduct(product, categoryId) {
-  const collection = db.collection('products');
-  
-  const existing = await collection.findOne({ externalId: product.externalId, supplier: 'jotakp' });
-  
-  const update = {
-    lastSyncedAt: new Date(),
-    categories: [categoryId]
-  };
-  
-  if (product.name) update.name = product.name;
-  if (product.price !== null) update.price = product.price;
-  if (product.stock !== undefined) update.stock = product.stock;
-  if (product.description) update.description = product.description;
-  if (product.sku) update.sku = product.sku;
-  if (product.imageUrls && product.imageUrls.length > 0) update.imageUrls = product.imageUrls;
-  
-  if (existing) {
-    // Check what changed
-    const changed = {};
-    for (const [key, value] of Object.entries(update)) {
-      if (key !== 'lastSyncedAt' && key !== 'categories') {
-        if (JSON.stringify(existing[key]) !== JSON.stringify(value)) {
-          changed[key] = value;
-        }
-      }
-    }
-    
-    if (Object.keys(changed).length > 0) {
-      await collection.updateOne({ _id: existing._id }, { $set: { ...changed, lastSyncedAt: new Date() } });
-      return { created: false, updated: true };
-    }
-    return { created: false, updated: false };
-  } else {
-    // Create new
-    await collection.insertOne({
-      ...update,
-      externalId: product.externalId,
-      supplier: 'jotakp',
-      status: 'active',
-      currency: 'USD',
-      attributes: [],
-      createdAt: new Date(),
-      updatedAt: new Date()
-    });
-    return { created: true, updated: false };
-  }
-}
-
-// Marcar descontinuados
-async function markDiscontinued(categoryId, scrapedIds) {
-  const collection = db.collection('products');
-  
-  const result = await collection.updateMany(
-    { 
-      categories: categoryId,
-      supplier: 'jotakp',
-      externalId: { $nin: scrapedIds }
-    },
-    { 
-      $set: { status: 'discontinued', discontinuedAt: new Date() }
-    }
-  );
-  
-  return result.modifiedCount;
+  return allProducts;
 }
 
 // ============================================
-// RUNNER PRINCIPAL
+// PRE-CHECK (del original - exact copy)
+// ============================================
+
+async function preCheckCategories(categories, browser, context) {
+  const result = {
+    changed: [],
+    unchanged: [],
+    errors: []
+  };
+  
+  console.log('[Incremental] Pre-checking categories in parallel...');
+  
+  // Process in batches
+  for (let i = 0; i < categories.length; i += MAX_PARALLEL_PAGES) {
+    const batch = categories.slice(i, i + MAX_PARALLEL_PAGES);
+    console.log(`[Incremental] Pre-check batch ${Math.floor(i/MAX_PARALLEL_PAGES) + 1}: ${batch.map(c => c.name).join(', ')}`);
+    
+    const batchPromises = batch.map(async (cat) => {
+      const page = await context.newPage();
+      try {
+        const preview = await getCategoryPreview(page, cat.idsubrubro1, SCRAPER_CONFIG.baseUrl);
+        await page.close();
+        
+        if (!preview) {
+          return { categoryId: cat.id, status: 'error' };
+        }
+        
+        // Compare with previous state
+        const hasChanged = await scraperStateRepository.hasChanged(cat.id, preview.contentHash);
+        
+        // Save snapshot always
+        await scraperStateRepository.saveSnapshot({
+          categoryId: cat.id,
+          idsubrubro1: cat.idsubrubro1,
+          contentHash: preview.contentHash,
+          productCount: preview.productCount,
+          productIds: preview.productIds,
+          firstPriceUsd: preview.firstPriceUsd,
+          capturedAt: new Date()
+        });
+        
+        return {
+          categoryId: cat.id,
+          status: hasChanged ? 'changed' : 'unchanged',
+          count: preview.productCount
+        };
+      } catch (error) {
+        await page.close();
+        return { categoryId: cat.id, status: 'error' };
+      }
+    });
+    
+    const batchResults = await Promise.all(batchPromises);
+    
+    // Process results
+    for (const r of batchResults) {
+      if (r.status === 'changed') {
+        result.changed.push(r.categoryId);
+        console.log(`[Incremental] Changed: ${r.categoryId} (count: ${r.count})`);
+      } else if (r.status === 'unchanged') {
+        result.unchanged.push(r.categoryId);
+        console.log(`[Incremental] Unchanged: ${r.categoryId}`);
+      } else {
+        result.errors.push(r.categoryId);
+        console.log(`[Incremental] Error: ${r.categoryId}`);
+      }
+    }
+  }
+  
+  console.log(`[Incremental] Pre-check complete: ${result.changed.length} changed, ${result.unchanged.length} unchanged, ${result.errors.length} errors`);
+  return result;
+}
+
+// ============================================
+// MAIN RUNNER
 // ============================================
 
 async function runIncrementalScraper() {
-  console.log('[Incremental] Starting...');
+  console.log('[Incremental] Starting incremental scraper...');
   
   const chromiumPath = process.env.CHROMIUM_PATH || '/usr/bin/chromium';
   
@@ -433,71 +497,40 @@ async function runIncrementalScraper() {
   };
   
   try {
-    // Login - usando selectores específicos como el original
+    // Login (como el original)
     console.log('[Incremental] Login...');
-    console.log('[Incremental] Login URL:', SCRAPER_CONFIG.loginUrl);
     const context = await browser.newContext();
     const loginPage = await context.newPage();
     
-    await loginPage.goto(SCRAPER_CONFIG.loginUrl, { waitUntil: 'networkidle', timeout: 30000 });
-    await loginPage.waitForTimeout(2000); // Esperar carga completa
-    
-    console.log('[Incremental] Filling login form...');
-    
-    // Usar selectores específicos del config original
-    const emailInput = await loginPage.$(SCRAPER_CONFIG.selectors.login.emailInputSelector);
-    const passwordInput = await loginPage.$(SCRAPER_CONFIG.selectors.login.passwordInputSelector);
-    const submitBtn = await loginPage.$(SCRAPER_CONFIG.selectors.login.submitButtonSelector);
-    
-    if (emailInput && passwordInput && submitBtn) {
-      await emailInput.fill(SCRAPER_CONFIG.email);
-      await passwordInput.fill(SCRAPER_CONFIG.password);
-      await submitBtn.click();
-      console.log('[Incremental] Clicked submit with selectors');
-    } else {
-      // Fallback: buscar por type
-      const allInputs = await loginPage.locator('input:not([type="hidden"]):visible').all();
-      if (allInputs.length >= 2) {
-        await allInputs[0].fill(SCRAPER_CONFIG.email);
-        await allInputs[1].fill(SCRAPER_CONFIG.password);
-        const btn = await loginPage.locator('input[type="submit"], button').first();
-        await btn.click();
-        console.log('[Incremental] Fallback: filled inputs directly');
-      }
-    }
-    
+    await loginPage.goto(SCRAPER_CONFIG.loginUrl, { waitUntil: 'networkidle' });
+    await loginPage.fill(SCRAPER_CONFIG.selectors.login.emailInputSelector, SCRAPER_CONFIG.email);
+    await loginPage.fill(SCRAPER_CONFIG.selectors.login.passwordInputSelector, SCRAPER_CONFIG.password);
+    await loginPage.click(SCRAPER_CONFIG.selectors.login.submitButtonSelector);
     await loginPage.waitForLoadState('networkidle');
     
-    // Select branch - esperar y usar waitForLoadState como el original
+    // Select branch
     await loginPage.waitForTimeout(2000);
     try {
-      const branchSelect = await loginPage.$('#ContentPlaceHolder1_ddlSucursal, #ddlSucursal');
-      if (branchSelect) {
+      const branchSelect = loginPage.locator('#ContentPlaceHolder1_ddlSucursal, #ddlSucursal').first();
+      if (await branchSelect.count() > 0) {
         await branchSelect.selectOption({ index: 1 });
         await loginPage.waitForLoadState('networkidle');
-        console.log('[Incremental] Branch selected');
       }
-    } catch { /* ignore */ }
+    } catch {}
     
-    console.log('[Incremental] Logged in successfully');
-    
-    // Cerrar login page y crear nueva página limpia para pre-check (como el original)
     await loginPage.close();
-    const page = await context.newPage();
+    console.log('[Incremental] Logged in');
     
-    // Pre-check de todas las categorías
-    const preCheckResult = await preCheckCategories(CATEGORIES, page);
+    // Pre-check
+    const preCheckResult = await preCheckCategories(CATEGORIES, browser, context);
+    console.log(`[Incremental] Pre-check result: ${preCheckResult.changed.length} changed, ${preCheckResult.unchanged.length} unchanged`);
     
-    console.log('[Incremental] Pre-check result:', preCheckResult.changed.length, 'changed');
-    
-    // Si no hay cambios, terminar
+    // No changes?
     if (preCheckResult.changed.length === 0) {
       return { success: true, preCheck: preCheckResult, message: 'No changes detected' };
     }
     
-    // Scrapear solo las categorías que changed (en paralelo)
-    console.log('[Incremental] Scraping changed categories...');
-    
+    // Scrape changed categories
     const changedCats = CATEGORIES.filter(c => preCheckResult.changed.includes(c.id));
     
     for (let i = 0; i < changedCats.length; i += MAX_PARALLEL_PAGES) {
@@ -506,44 +539,53 @@ async function runIncrementalScraper() {
       
       const batchPromises = batch.map(async (cat) => {
         try {
-          // Crear nueva página para scraping (COMO EL ORIGINAL)
-          const scraperPage = await context.newPage();
-          try {
-            const result = await scrapeCategory(context, scraperPage, cat.id, cat.idsubrubro1);
-            return { ...result, categoryId: cat.id };
-          } finally {
-            try { await scraperPage.close(); } catch {}
+          const products = await scrapeCategoryProducts(cat.id, cat.idsubrubro1, SCRAPER_CONFIG.baseUrl, browser, context);
+          
+          // Save each product
+          for (const product of products) {
+            const result = await productRepository.upsert({
+              ...product,
+              externalId: product.externalId,
+              supplier: 'jotakp',
+              categories: [cat.id],
+              lastSyncedAt: new Date()
+            });
+            
+            if (result.created) results.created++;
+            else if (result.updated) results.updated++;
+            else results.unchanged++;
           }
-        } catch (e) {
-          console.log(`[Incremental] Error ${cat.id}:`, e.message);
-          return { products: [], scrapedIds: [], categoryId: cat.id };
+          
+          // Mark discontinued
+          if (products.length > 0) {
+            const scrapedIds = products.map(p => p.externalId);
+            const count = await productRepository.markDiscontinued(cat.id, scrapedIds);
+            results.discontinued += count;
+          }
+          
+          // Update state
+          await scraperStateRepository.upsertCategoryState({
+            categoryId: cat.id,
+            idsubrubro1: cat.idsubrubro1,
+            contentHash: '',
+            productCount: products.length,
+            lastScrapeAt: new Date()
+          });
+          
+          return { success: true, created: products.length };
+        } catch (error) {
+          console.error(`[Incremental] Error scraping ${cat.id}:`, error);
+          return { success: false, created: 0 };
         }
       });
       
-      const batchResults = await Promise.all(batchPromises);
-      
-      for (const r of batchResults) {
-        const catId = r.categoryId;
-        
-        for (const product of r.products) {
-          const result = await saveProduct(product, catId);
-          if (result.created) results.created++;
-          else if (result.updated) results.updated++;
-          else results.unchanged++;
-        }
-        
-        // Mark discontinued
-        if (r.scrapedIds.length > 0) {
-          const count = await markDiscontinued(catId, r.scrapedIds);
-          results.discontinued += count;
-        }
-      }
+      await Promise.all(batchPromises);
     }
     
     console.log('[Incremental] Complete! Created:', results.created, 'Updated:', results.updated, 'Discontinued:', results.discontinued);
     
-    return { 
-      success: true, 
+    return {
+      success: true,
       preCheck: preCheckResult,
       created: results.created,
       updated: results.updated,
@@ -579,7 +621,6 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok' });
 });
 
-// Status endpoint
 app.get('/status', async (req, res) => {
   try {
     if (!db) await connectDB();
@@ -587,7 +628,7 @@ app.get('/status', async (req, res) => {
     const totalProducts = await db.collection('products').countDocuments({ supplier: 'jotakp', status: 'active' });
     const lastScrapes = await db.collection('scraperStates').find().sort({ lastScrapeAt: -1 }).limit(10).toArray();
     
-    res.json({ 
+    res.json({
       status: 'ok',
       products: totalProducts,
       lastScrapes: lastScrapes.map(s => ({ category: s.categoryId, date: s.lastScrapeAt }))
