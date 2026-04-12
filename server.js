@@ -394,10 +394,17 @@ async function runIncrementalScraper() {
   try {
     // Login
     console.log('[Incremental] Login...');
+    console.log('[Incremental] Login URL:', SCRAPER_CONFIG.loginUrl);
     const context = await browser.newContext();
     const page = await context.newPage();
     
-await page.goto(SCRAPER_CONFIG.loginUrl, { waitUntil: 'networkidle' });
+    await page.goto(SCRAPER_CONFIG.loginUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    console.log('[Incremental] Page loaded, waiting for inputs...');
+    
+    // Wait for input field to appear
+    await page.waitForSelector('input[type="text"], input[name*="Usuario"], #txtUsuario', { timeout: 10000 });
+    console.log('[Incremental] Input found, filling...');
+    
     await page.fill(SCRAPER_CONFIG.selectors.login.emailInputSelector, SCRAPER_CONFIG.email);
     await page.fill(SCRAPER_CONFIG.selectors.login.passwordInputSelector, SCRAPER_CONFIG.password);
     await page.click(SCRAPER_CONFIG.selectors.login.submitButtonSelector);
