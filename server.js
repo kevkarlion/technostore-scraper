@@ -33,10 +33,14 @@ async function connectDB() {
 // ============================================
 // CONFIGURACIÓN (adaptada de config.ts)
 // ============================================
+// Force HTTPS for all URLs
+function toHttps(url) {
+  return url.replace(/^http:/, 'https:');
+}
 
 const SCRAPER_CONFIG = {
-  baseUrl: process.env.SUPPLIER_URL || 'https://jotakp.dyndns.org',
-  loginUrl: process.env.SUPPLIER_LOGIN_URL || 'https://jotakp.dyndns.org/loginext.aspx',
+  baseUrl: toHttps(process.env.SUPPLIER_URL || 'https://jotakp.dyndns.org'),
+  loginUrl: toHttps(process.env.SUPPLIER_LOGIN_URL || 'https://jotakp.dyndns.org/loginext.aspx'),
   email: process.env.SUPPLIER_EMAIL || '20418216795',
   password: process.env.SUPPLIER_PASSWORD || '123456',
   selectors: {
@@ -399,83 +403,30 @@ async function runIncrementalScraper() {
     const page = await context.newPage();
     
     await page.goto(SCRAPER_CONFIG.loginUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-    await page.waitForTimeout(3000); // Espera inicial para que cargue
+    await page.waitForTimeout(5000); // Wait for page to fully load
     
-    console.log('[Incremental] Page loaded, trying to find inputs...');
+    console.log('[Incremental] Finding all inputs on page...');
     
-    // Try multiple selectors for email
-    const emailSelectors = [
-      '#ContentPlaceHolder1_txtUsuario',
-      '#txtUsuario', 
-      'input[name*="Usuario"]',
-      'input[id*="Usuario"]',
-      'input[type="text"]'
-    ];
+    // Get all inputs on the page
+    const allInputs = await page.locator('input').all();
+    console.log('[Incremental] Found', allInputs.length, 'inputs');
     
-    let emailInput = null;
-    for (const sel of emailSelectors) {
-      try {
-        const el = await page.$(sel);
-        if (el) {
-          emailInput = el;
-          console.log('[Incremental] Found email input:', sel);
-          break;
-        }
-      } catch {}
-    }
-    
-    if (!emailInput) {
-      // Get page html for debug
-      const html = await page.content();
-      console.log('[Incremental] Page HTML (first 500 chars):', html.substring(0, 500));
-      throw new Error('Could not find email input');
-    }
-    
-    // Get password input
-    const passSelectors = ['#ContentPlaceHolder1_txtClave', '#txtClave', 'input[name*="Clave"]', 'input[type="password"]'];
-    let passInput = null;
-    for (const sel of passSelectors) {
-      try {
-        const el = await page.$(sel);
-        if (el) {
-          passInput = el;
-          console.log('[Incremental] Found password input:', sel);
-          break;
-        }
-      } catch {}
-    }
-    
-    if (!passInput) {
-      throw new Error('Could not find password input');
-    }
-    
-    // Fill and submit
-    await emailInput.fill(SCRAPER_CONFIG.email);
-    await passInput.fill(SCRAPER_CONFIG.password);
-    
-    // Try to find submit button
-    const submitSelectors = ['#ContentPlaceHolder1_btnIngresar', '#btnIngresar', 'input[type="submit"]', 'button[type="submit"]'];
-    let submitBtn = null;
-    for (const sel of submitSelectors) {
-      try {
-        const el = await page.$(sel);
-        if (el) {
-          submitBtn = el;
-          console.log('[Incremental] Found submit button:', sel);
-          break;
-        }
-      } catch {}
-    }
-    
-    if (submitBtn) {
+    if (allInputs.length >= 2) {
+      // Fill first input (email) and second input (password)
+      await allInputs[0].fill(SCRAPER_CONFIG.email);
+      await allInputs[1].fill(SCRAPER_CONFIG.password);
+      console.log('[Incremental] Filled inputs directly');
+      
+      // Try to find and click submit button
+      const submitBtn = await page.locator('input[type="submit"], button').first();
       await submitBtn.click();
+      console.log('[Incremental] Clicked submit');
     } else {
-      // Press Enter as fallback
-      await page.keyboard.press('Enter');
+      throw new Error('Not enough inputs found on page');
     }
     
     await page.waitForLoadState('networkidle');
-    console.log('[Incremental] Logged in (hopefully)');
+    console.log('[Incremental] Logged in');
     
     // Select branch
     await page.waitForTimeout(2000);
