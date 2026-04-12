@@ -407,12 +407,12 @@ async function runIncrementalScraper() {
     
     console.log('[Incremental] Finding all inputs on page...');
     
-    // Get all inputs on the page
-    const allInputs = await page.locator('input').all();
-    console.log('[Incremental] Found', allInputs.length, 'inputs');
+    // Get all VISIBLE inputs on the page (not hidden)
+    const allInputs = await page.locator('input:not([type="hidden"]):visible').all();
+    console.log('[Incremental] Found', allInputs.length, 'visible inputs');
     
     if (allInputs.length >= 2) {
-      // Fill first input (email) and second input (password)
+      // Fill first visible input (email) and second visible input (password)
       await allInputs[0].fill(SCRAPER_CONFIG.email);
       await allInputs[1].fill(SCRAPER_CONFIG.password);
       console.log('[Incremental] Filled inputs directly');
@@ -422,7 +422,15 @@ async function runIncrementalScraper() {
       await submitBtn.click();
       console.log('[Incremental] Clicked submit');
     } else {
-      throw new Error('Not enough inputs found on page');
+      // Fallback: try to find by type
+      const emailInput = await page.locator('input[type="text"]').first();
+      const passInput = await page.locator('input[type="password"]').first();
+      await emailInput.fill(SCRAPER_CONFIG.email);
+      await passInput.fill(SCRAPER_CONFIG.password);
+      console.log('[Incremental] Filled using type selectors');
+      
+      const submitBtn = await page.locator('input[type="submit"], button').first();
+      await submitBtn.click();
     }
     
     await page.waitForLoadState('networkidle');
