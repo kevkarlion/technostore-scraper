@@ -4,12 +4,20 @@ import { chromium } from 'playwright';
 import { MongoClient } from 'mongodb';
 import crypto from 'crypto';
 
-// CONFIG
+// CONFIG - with defaults and logging
+const SUPPLIER_URL = process.env.SUPPLIER_URL || 'https://jotakp.dyndns.org';
+const SUPPLIER_LOGIN_URL = process.env.SUPPLIER_LOGIN_URL || 'http://jotakp.dyndns.org/loginext.aspx';
+const SUPPLIER_EMAIL = process.env.SUPPLIER_EMAIL || '20418216795';
+const SUPPLIER_PASSWORD = process.env.SUPPLIER_PASSWORD || '123456';
+
+console.log('[Config] SUPPLIER_URL:', SUPPLIER_URL);
+console.log('[Config] SUPPLIER_EMAIL:', SUPPLIER_EMAIL);
+
 const SCRAPER_CONFIG = {
-  baseUrl: process.env.SUPPLIER_URL || 'https://jotakp.dyndns.org',
-  loginUrl: process.env.SUPPLIER_LOGIN_URL || 'http://jotakp.dyndns.org/loginext.aspx',
-  email: process.env.SUPPLIER_EMAIL || '20418216795',
-  password: process.env.SUPPLIER_PASSWORD || '123456',
+  baseUrl: SUPPLIER_URL,
+  loginUrl: SUPPLIER_LOGIN_URL,
+  email: SUPPLIER_EMAIL,
+  password: SUPPLIER_PASSWORD,
   selectors: {
     login: {
       emailInputSelector: '#ContentPlaceHolder1_txtUsuario, #txtUsuario',
@@ -18,6 +26,19 @@ const SCRAPER_CONFIG = {
     }
   }
 };
+
+// Validation
+if (!SCRAPER_CONFIG.email) {
+  throw new Error('SUPPLIER_EMAIL is required');
+}
+if (!SCRAPER_CONFIG.password) {
+  throw new Error('SUPPLIER_PASSWORD is required');
+}
+if (!SCRAPER_CONFIG.selectors.login.emailInputSelector) {
+  throw new Error('emailInputSelector is undefined');
+}
+
+console.log('[Config] Selectors:', SCRAPER_CONFIG.selectors.login);
 
 const JOTAKP_CATEGORIES = [
   { id: 'carry-caddy-disk', idsubrubro1: 100 },
