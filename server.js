@@ -237,92 +237,81 @@ async function scrapeCategory(page, categoryId, idsubrubro1) {
       // Wait for products to load (como el original)
       await page.waitForSelector('a[href*="articulo.aspx?id="]', { timeout: 5000 }).catch(() => {});
       
-      const items = await page.locator('a[href*="articulo.aspx?id="]').all();
+      // Usar una nueva página para cada producto (evitar conflicto de locators)
+      const itemLinks = await page.locator('a[href*="articulo.aspx?id="]').all();
       
-      if (items.length === 0) break;
+      if (itemLinks.length === 0) break;
       
-      console.log(`[Scraper] Page ${pageNum}: ${items.length} products`);
+      console.log(`[Scraper] Page ${pageNum}: ${itemLinks.length} products`);
       
-      // Scrapear cada producto (paralelo en batches de 2)
-      for (let i = 0; i < items.length; i += 2) {
-        const batch = items.slice(i, i + 2);
-        
-        const batchPromises = batch.map(async (item) => {
+      // Scrapear CADA PRODUCTO secuencialmente (no paralelo) para evitar conflictos de página
+      for (const item of itemLinks) {
+        try {
+          // Get href y text DESDE LA TABLA DE LISTA (sin navegar aún)
+          const href = await item.getAttribute('href');
+          const fullText = await item.textContent();
+          
+          const idMatch = href.match(/id=(\d+)/);
+          const externalId = idMatch ? idMatch[1] : null;
+          if (!externalId) continue;
+          
+          // Get price from text
+          let price = null;
+          const priceMatch = fullText.match(/U\$D\s+([\d.,]+)/);
+          if (priceMatch) price = parseFloat(priceMatch[1].replace(',', '.'));
+          
+          // Get name
+          let name = fullText.replace(/U\$D[\s\d.,+IVA%]+$/, '').trim();
+          if (!name || name.length < 3) continue;
+          
+          // Click en el producto para ir al detalle (en lugar de goto)
+          await item.click();
+          await page.waitForLoadState('networkidle', { timeout: 15000 });
+          
+          // Get details del producto
+          let description = '';
           try {
-            const href = await item.getAttribute('href');
-            const fullText = await item.textContent();
-            
-            const idMatch = href.match(/id=(\d+)/);
-            const externalId = idMatch ? idMatch[1] : null;
-            if (!externalId) return null;
-            
-            // Get price from text
-            let price = null;
-            const priceMatch = fullText.match(/U\$D\s+([\d.,]+)/);
-            if (priceMatch) price = parseFloat(priceMatch[1].replace(',', '.'));
-            
-            // Get name
-            let name = fullText.replace(/U\$D[\s\d.,+IVA%]+$/, '').trim();
-            if (!name || name.length < 3) return null;
-            
-            // Navigate to detail
-            const detailUrl = `${SCRAPER_CONFIG.baseUrl}/articulo.aspx?id=${externalId}`;
-            await page.goto(detailUrl, { waitUntil: 'networkidle', timeout: 30000 });
-            
-            // Get details
-            let description = '';
-            try {
-              const desc = await page.$('#ContentPlaceHolder1_lblDescripcion');
-              if (desc) description = await desc.textContent() || '';
-            } catch {}
-            
-            let stock = 0;
-            try {
-              const stockEl = await page.$('#ContentPlaceHolder1_lblStock');
-              if (stockEl) {
-                const stockText = await stockEl.textContent() || '';
-                const m = stockText.match(/(\d+)/);
-                stock = m ? parseInt(m[1]) : 0;
-              }
-            } catch {}
-            
-            let sku = '';
-            try {
-              const skuEl = await page.$('#ContentPlaceHolder1_lblCodigo');
-              if (skuEl) sku = await skuEl.textContent() || '';
-            } catch {}
-            
-            const images = [];
-            try {
-              const imgs = await page.locator('div.tg-img-overlay.artImg').all();
-              for (const img of imgs.slice(0, 5)) {
-                const src = await img.getAttribute('data-src');
-                if (src && src.includes('imagenes/')) images.push(src);
-              }
-            } catch {}
-            
-            // Back to list - esperar como el original
-            await page.goBack();
-            await page.waitForLoadState('networkidle').catch(() => {});
-            await page.waitForSelector('a[href*="articulo.aspx?id="]', { timeout: 5000 }).catch(() => {});
-            
-            return { externalId, name, price, stock, description, sku, imageUrls: images };
-          } catch (e) {
-            console.log(`[Scraper] Error product:`, e.message);
-            try { await page.goBack(); } catch {}
-            return null;
-          }
-        });
-        
-        const batchResults = await Promise.all(batchPromises);
-        for (const p of batchResults) {
-          if (p) {
-            products.push(p);
-            scrapedIds.push(p.externalId);
-          }
+            const desc = await page.$('#ContentPlaceHolder1_lblDescripcion');
+            if (desc) description = await desc.textContent() || '';
+          } catch {}
+          
+          let stock = 0;
+          try {
+            const stockEl = await page.$('#ContentPlaceHolder1_lblStock');
+            if (stockEl) {
+              const stockText = await stockEl.textContent() || '';
+              const m = stockText.match(/(\d+)/);
+              stock = m ? parseInt(m[1]) : 0;
+            }
+          } catch {}
+          
+          let sku = '';
+          try {
+            const skuEl = await page.$('#ContentPlaceHolder1_lblCodigo');
+            if (skuEl) sku = await skuEl.textContent() || '';
+          } catch {}
+          
+          const images = [];
+          try {
+            const imgs = await page.locator('div.tg-img-overlay.artImg').all();
+            for (const img of imgs.slice(0, 5)) {
+              const src = await img.getAttribute('data-src');
+              if (src && src.includes('imagenes/')) images.push(src);
+            }
+          } catch {}
+          
+          // Volver ATRÁS con el historial del browser
+          await page.goBack();
+          await page.waitForLoadState('networkidle', { timeout: 15000 });
+          await page.waitForSelector('a[href*="articulo.aspx?id="]', { timeout: 5000 }).catch(() => {});
+          
+products.push({ externalId, name, price, stock, description, sku, imageUrls: images });
+          scrapedIds.push(externalId);
+        } catch (e) {
+          console.log(`[Scraper] Error product:`, e.message);
+          try { await page.goBack(); } catch {}
         }
       }
-      
     } catch (e) {
       console.log(`[Scraper] Error page ${pageNum}:`, e.message);
     }
