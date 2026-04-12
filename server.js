@@ -219,35 +219,52 @@ async function preCheckCategories(categories, page) {
 }
 
 // Scrapear productos de una categoría (detalle)
-async function scrapeCategory(page, categoryId, idsubrubro1) {
+// COMO EL ORIGINAL: usar páginas separadas para cada producto
+async function scrapeCategory(context, page, categoryId, idsubrubro1) {
   console.log(`[Scraper] Scraping: ${categoryId}`);
   
   const products = [];
   const scrapedIds = [];
   
+  // Cargar la lista de la categoría
+  const listUrl = `${SCRAPER_CONFIG.baseUrl}/buscar.aspx?idsubrubro1=${idsubrubro1}&pag=1`;
+  
+  try {
+    await withRetry(async () => {
+      await page.goto(listUrl, { waitUntil: 'networkidle', timeout: 45000 }); // Timeout como el original
+    }, 2);
+  } catch (e) {
+    console.log(`[Scraper] Error loading list:`, e.message);
+    return { products: [], scrapedIds: [] };
+  }
+  
+  // Loop por páginas (1, 2, 3)
   for (let pageNum = 1; pageNum <= MAX_DETAIL_PAGES; pageNum++) {
-    const url = `${SCRAPER_CONFIG.baseUrl}/buscar.aspx?idsubrubro1=${idsubrubro1}&pag=${pageNum}`;
-    
     try {
-      // Retry wrapper para ERR_ABORTED
-      await withRetry(async () => {
-        await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
-      }, 2);
+      if (pageNum > 1) {
+        // Navegar a la siguiente página
+        await page.goto(`${SCRAPER_CONFIG.baseUrl}/buscar.aspx?idsubrubro1=${idsubrubro1}&pag=${pageNum}`, { 
+          waitUntil: 'networkidle', 
+          timeout: 45000 
+        });
+      }
       
-      // Wait for products to load (como el original)
-      await page.waitForSelector('a[href*="articulo.aspx?id="]', { timeout: 5000 }).catch(() => {});
+      await page.waitForSelector('a[href*="articulo.aspx?id="]', { timeout: 10000 }).catch(() => {});
       
-      // Usar una nueva página para cada producto (evitar conflicto de locators)
+      // Obtener TODOS los links de productos de la página
       const itemLinks = await page.locator('a[href*="articulo.aspx?id="]').all();
       
-      if (itemLinks.length === 0) break;
+      if (itemLinks.length === 0) {
+        console.log(`[Scraper] Page ${pageNum}: no products`);
+        break;
+      }
       
       console.log(`[Scraper] Page ${pageNum}: ${itemLinks.length} products`);
       
-      // Scrapear CADA PRODUCTO secuencialmente (no paralelo) para evitar conflictos de página
-      for (const item of itemLinks) {
+      // Para cada producto, crear una NUEVA PÁGINA (como el original)
+      for (let i = 0; i < itemLinks.length; i++) {
         try {
-          // Get href y text DESDE LA TABLA DE LISTA (sin navegar aún)
+          const item = itemLinks[i];
           const href = await item.getAttribute('href');
           const fullText = await item.textContent();
           
@@ -264,52 +281,56 @@ async function scrapeCategory(page, categoryId, idsubrubro1) {
           let name = fullText.replace(/U\$D[\s\d.,+IVA%]+$/, '').trim();
           if (!name || name.length < 3) continue;
           
-          // Click en el producto para ir al detalle (en lugar de goto)
-          await item.click();
-          await page.waitForLoadState('networkidle', { timeout: 15000 });
+          // Crear una NUEVA PÁGINA para el detalle (COMO EL ORIGINAL)
+          const detailPage = await context.newPage();
           
-          // Get details del producto
-          let description = '';
           try {
-            const desc = await page.$('#ContentPlaceHolder1_lblDescripcion');
-            if (desc) description = await desc.textContent() || '';
-          } catch {}
-          
-          let stock = 0;
-          try {
-            const stockEl = await page.$('#ContentPlaceHolder1_lblStock');
-            if (stockEl) {
-              const stockText = await stockEl.textContent() || '';
-              const m = stockText.match(/(\d+)/);
-              stock = m ? parseInt(m[1]) : 0;
-            }
-          } catch {}
-          
-          let sku = '';
-          try {
-            const skuEl = await page.$('#ContentPlaceHolder1_lblCodigo');
-            if (skuEl) sku = await skuEl.textContent() || '';
-          } catch {}
-          
-          const images = [];
-          try {
-            const imgs = await page.locator('div.tg-img-overlay.artImg').all();
-            for (const img of imgs.slice(0, 5)) {
-              const src = await img.getAttribute('data-src');
-              if (src && src.includes('imagenes/')) images.push(src);
-            }
-          } catch {}
-          
-          // Volver ATRÁS con el historial del browser
-          await page.goBack();
-          await page.waitForLoadState('networkidle', { timeout: 15000 });
-          await page.waitForSelector('a[href*="articulo.aspx?id="]', { timeout: 5000 }).catch(() => {});
-          
-products.push({ externalId, name, price, stock, description, sku, imageUrls: images });
-          scrapedIds.push(externalId);
+            const detailUrl = `${SCRAPER_CONFIG.baseUrl}/articulo.aspx?id=${externalId}`;
+            await detailPage.goto(detailUrl, { waitUntil: 'networkidle', timeout: 45000 });
+            
+            // Get details
+            let description = '';
+            let stock = 0;
+            let sku = '';
+            let images = [];
+            
+            try {
+              const desc = await detailPage.$('#ContentPlaceHolder1_lblDescripcion');
+              if (desc) description = await desc.textContent() || '';
+            } catch {}
+            
+            try {
+              const stockEl = await detailPage.$('#ContentPlaceHolder1_lblStock');
+              if (stockEl) {
+                const stockText = await stockEl.textContent() || '';
+                const m = stockText.match(/(\d+)/);
+                stock = m ? parseInt(m[1]) : 0;
+              }
+            } catch {}
+            
+            try {
+              const skuEl = await detailPage.$('#ContentPlaceHolder1_lblCodigo');
+              if (skuEl) sku = await skuEl.textContent() || '';
+            } catch {}
+            
+            try {
+              const imgs = await detailPage.locator('div.tg-img-overlay.artImg').all();
+              for (const img of imgs.slice(0, 5)) {
+                const src = await img.getAttribute('data-src');
+                if (src && src.includes('imagenes/')) images.push(src);
+              }
+            } catch {}
+            
+            products.push({ externalId, name, price, stock, description, sku, imageUrls: images });
+            scrapedIds.push(externalId);
+          } catch (e) {
+            console.log(`[Scraper] Error detail ${externalId}:`, e.message);
+          } finally {
+            // CERRAR la página inmediatamente (COMO EL ORIGINAL)
+            try { await detailPage.close(); } catch {}
+          }
         } catch (e) {
           console.log(`[Scraper] Error product:`, e.message);
-          try { await page.goBack(); } catch {}
         }
       }
     } catch (e) {
@@ -485,8 +506,14 @@ async function runIncrementalScraper() {
       
       const batchPromises = batch.map(async (cat) => {
         try {
-          const result = await scrapeCategory(page, cat.id, cat.idsubrubro1);
-          return { ...result, categoryId: cat.id };
+          // Crear nueva página para scraping (COMO EL ORIGINAL)
+          const scraperPage = await context.newPage();
+          try {
+            const result = await scrapeCategory(context, scraperPage, cat.id, cat.idsubrubro1);
+            return { ...result, categoryId: cat.id };
+          } finally {
+            try { await scraperPage.close(); } catch {}
+          }
         } catch (e) {
           console.log(`[Incremental] Error ${cat.id}:`, e.message);
           return { products: [], scrapedIds: [], categoryId: cat.id };
