@@ -416,6 +416,47 @@ async function scrapeProductDetail(page, productUrl) {
     if (thumbnailUrls.length > 0) {
       product.imageUrls = thumbnailUrls;
     }
+    
+    // Method 3: Fallback - try common image selectors
+    if (!product.imageUrls || product.imageUrls.length === 0) {
+      const imageSelectors = [
+        "#ContentPlaceHolder1_imgArticulo",
+        "img[id*='img']",
+        ".product-image img",
+        "#product-image img",
+        ".principal-image img",
+        "img.product-img",
+        "img[itemprop='image']",
+        "img.main-image",
+      ];
+
+      for (const selector of imageSelectors) {
+        try {
+          const img = page.locator(selector).first();
+          if (await img.count() > 0) {
+            const src = await img.getAttribute("src");
+            const dataSrc = await img.getAttribute("data-src");
+            const dataOriginal = await img.getAttribute("data-original");
+
+            if (src && (src.startsWith("http") || src.startsWith("/"))) {
+              const fullUrl = src.startsWith("http") ? src : `${SCRAPER_CONFIG.baseUrl}${src}`;
+              product.imageUrls = [fullUrl];
+              break;
+            } else if (dataSrc && (dataSrc.startsWith("http") || dataSrc.startsWith("/"))) {
+              const fullUrl = dataSrc.startsWith("http") ? dataSrc : `${SCRAPER_CONFIG.baseUrl}${dataSrc}`;
+              product.imageUrls = [fullUrl];
+              break;
+            } else if (dataOriginal && (dataOriginal.startsWith("http") || dataOriginal.startsWith("/"))) {
+              const fullUrl = dataOriginal.startsWith("http") ? dataOriginal : `${SCRAPER_CONFIG.baseUrl}${dataOriginal}`;
+              product.imageUrls = [fullUrl];
+              break;
+            }
+          }
+        } catch {
+          // Try next selector
+        }
+      }
+    }
   } catch (e) {
     console.log(`[Detail] Image error: ${e.message}`);
   }
