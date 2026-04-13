@@ -380,25 +380,34 @@ async function scrapeProductDetail(page, productUrl) {
   
 // Images - get from detail page using Playwright selectors (same as local scraper)
   try {
-    // Method 1: Get ALL images from thumbnails (data-src attribute)
-    // Estructura: <div class="tg-img-overlay artImg" data-src="imagenes/000015886.JPG">
-    const thumbnailDivs = await page.locator("div.tg-img-overlay.artImg").all();
+    // Method 1: Get images from thumbnails with background-image
+    // Estructura: <div class="tg-gal-img" style="background-image: url(imagenes/min/imagen00028904.jpg)">
+    const thumbDivs = await page.locator("div[class*='tg-gal-img'][style*='background-image']").all();
     const thumbnailUrls = [];
     
-    for (const div of thumbnailDivs) {
-      const dataSrc = await div.getAttribute("data-src");
-      if (dataSrc && dataSrc.includes("imagenes/") && !dataSrc.includes("/min/")) {
-        const fullUrl = dataSrc.startsWith("http") 
-          ? dataSrc 
-          : `${SCRAPER_CONFIG.baseUrl}/${dataSrc}`;
-        thumbnailUrls.push(fullUrl);
+    for (const div of thumbDivs) {
+      const style = await div.getAttribute("style");
+      if (style) {
+        const match = style.match(/url\(["']?(imagenes\/min\/imagen\d+\.[a-zA-Z]{3,4})["']?\)/);
+        if (match && match[1]) {
+          // Convert min thumbnail to full image: imagenes/min/imagen00028904.jpg -> imagenes/000028904.JPG
+          const thumbPath = match[1]; // imagenes/min/imagen00028904.jpg
+          const imgNum = thumbPath.match(/imagen(\d+)\./);
+          if (imgNum) {
+            const fullPath = `imagenes/${imgNum[1]}.JPG`;
+            const fullUrl = `${SCRAPER_CONFIG.baseUrl}/${fullPath}`;
+            if (!thumbnailUrls.includes(fullUrl)) {
+              thumbnailUrls.push(fullUrl);
+            }
+          }
+        }
       }
     }
     
-    // Method 2: Also get the main image (img.img-fluid)
+    // Method 2: Get main image (img.img-fluid)
     if (thumbnailUrls.length === 0) {
       try {
-        const mainImg = page.locator("img.img-fluid").first();
+        const mainImg = await page.locator("img.img-fluid").first();
         if (await mainImg.count() > 0) {
           const src = await mainImg.getAttribute("src");
           if (src && src.includes("imagenes/") && !src.includes("/min/")) {
