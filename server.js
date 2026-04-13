@@ -8,6 +8,7 @@ const http = require('http');
 const { v2: cloudinary } = require('cloudinary');
 
 const app = express();
+app.use(express.json());
 const PORT = process.env.PORT || 3001;
 
 // ============================================
