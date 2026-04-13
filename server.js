@@ -44,14 +44,24 @@ async function uploadImagesToCloudinary(imageUrls, supplier, externalId) {
   
   for (let i = 0; i < imageUrls.length; i++) {
     const imageUrl = imageUrls[i];
+    
+    // Skip if already Cloudinary
     if (!imageUrl || imageUrl.includes('cloudinary')) {
       cloudUrls.push(imageUrl);
       continue;
     }
     
+    // Convert relative URLs to absolute
+    let fullUrl = imageUrl;
+    if (imageUrl.startsWith('imagenes/') || imageUrl.startsWith('/imagenes/')) {
+      fullUrl = `${SCRAPER_CONFIG.baseUrl}/${imageUrl.replace(/^\//, '')}`;
+    } else if (!imageUrl.startsWith('http')) {
+      fullUrl = `${SCRAPER_CONFIG.baseUrl}/${imageUrl}`;
+    }
+    
     try {
       const publicId = `${supplier}/${externalId}_${i}`;
-      const result = await cloudinary.uploader.upload(imageUrl, {
+      const result = await cloudinary.uploader.upload(fullUrl, {
         public_id: publicId,
         folder: `technostore/${supplier}`,
         transformation: [
@@ -62,7 +72,8 @@ async function uploadImagesToCloudinary(imageUrls, supplier, externalId) {
       cloudUrls.push(result.secure_url);
       console.log(`[Cloudinary] Uploaded: ${externalId} #${i}`);
     } catch (e) {
-      console.error(`[Cloudinary] Failed: ${imageUrl}`, e.message);
+      console.error(`[Cloudinary] Failed: ${fullUrl}`, e.message);
+      // Keep original URL as fallback
       cloudUrls.push(imageUrl);
     }
     
@@ -764,14 +775,13 @@ app.post('/reupload', async (req, res) => {
   const limit = qLimit ? parseInt(String(qLimit)) : 10;
 const supplier = qSupplier ? String(qSupplier) : 'jotakp';
   
-  // Find products without Cloudinary URL (have local imageUrls but not cloudinary)
+  // Find products without Cloudinary URL (have imageUrls but not cloudinary)
   const products = await db.collection('products')
     .find({ 
       supplier: supplier,
       imageUrls: { $exists: true, $ne: [] },
-      $or: [
-        { cloudinaryUrls: { $exists: false } },
-        { cloudinaryUrls: { $size: 0 } }
+      $nor: [
+        { imageUrls: { $regex: 'cloudinary' } }
       ]
     })
     .limit(limit)
@@ -813,10 +823,14 @@ const supplier = qSupplier ? String(qSupplier) : 'jotakp';
       await new Promise(r => setTimeout(r, 500));
     }
     
-    // Update product with cloudinary URLs
+    // Update product with cloudinary URLs in BOTH fields
     await db.collection('products').updateOne(
       { _id: product._id },
-      { $set: { cloudinaryUrls: cloudUrls, lastSyncedAt: new Date() } }
+      { $set: { 
+        imageUrls: cloudUrls,  // This is what the frontend reads!
+        cloudinaryUrls: cloudUrls, 
+        lastSyncedAt: new Date() 
+      } }
     );
     
     results.uploaded++;
