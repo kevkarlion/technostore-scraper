@@ -4,6 +4,9 @@ import { chromium } from 'playwright';
 import { MongoClient } from 'mongodb';
 import crypto from 'crypto';
 
+// Import new scraper modules
+import { runScraper, runIncrementalScraper, jotakpCategories } from './src/lib/scraper/index';
+
 // CONFIG - with defaults and logging
 const SUPPLIER_URL = process.env.SUPPLIER_URL || 'https://jotakp.dyndns.org';
 const SUPPLIER_LOGIN_URL = process.env.SUPPLIER_LOGIN_URL || 'http://jotakp.dyndns.org/loginext.aspx';
@@ -68,6 +71,8 @@ async function getDb() {
     const client = new MongoClient(MONGO_URI);
     await client.connect();
     db = client.db(DB_NAME);
+    // Expose globally for scraper modules
+    (global as any).db = db;
   }
   return db;
 }
@@ -329,4 +334,36 @@ app.get('/status', async (req, res) => {
     res.status(500).json({ error: e.message });
   }
 });
+
+// NEW: Full scraper endpoints (from TechnoStore)
+app.get('/scraper/categories', (req, res) => {
+  // List available categories
+  const categories = jotakpCategories.map(c => ({ id: c.id, name: c.name, idsubrubro1: c.idsubrubro1, parentId: c.parentId }));
+  res.json({ categories });
+});
+
+app.post('/scraper/run', async (req, res) => {
+  // Run full scraper for specific category or all
+  try {
+    const { categoryId, idsubrubro1, source } = req.body;
+    const result = await runScraper({ categoryId, idsubrubro1, source });
+    res.json(result);
+  } catch (error) {
+    console.error('[Scraper] Error:', error);
+    res.status(500).json({ success: false, error: String(error) });
+  }
+});
+
+app.post('/scraper/incremental', async (req, res) => {
+  // Run incremental scraper with pre-check
+  try {
+    const { forceFullScrape } = req.body;
+    const result = await runIncrementalScraper(forceFullScrape);
+    res.json(result);
+  } catch (error) {
+    console.error('[Incremental] Error:', error);
+    res.status(500).json({ success: false, error: String(error) });
+  }
+});
+
 app.listen(PORT, () => { console.log('[Server] Scraper server on port', PORT); });

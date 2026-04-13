@@ -1,0 +1,9 @@
+[Scraper] Initialized PLAYWRIGHT_BROWSERS_PATH: /tmp/ms-playwright
+[Config] SUPPLIER_URL: https://jotakp.dyndns.org
+[Config] SUPPLIER_EMAIL: 20418216795
+[Config] Selectors: {
+  emailInputSelector: '#ContentPlaceHolder1_txtUsuario, #txtUsuario',
+  passwordInputSelector: '#ContentPlaceHolder1_txtClave, #txtClave',
+  submitButtonSelector: '#ContentPlaceHolder1_btnIngresar, #btnIngresar'
+}
+[Server] Scraper server on port 3001
