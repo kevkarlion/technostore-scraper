@@ -382,21 +382,20 @@ async function scrapeProductDetail(page, productUrl) {
   try {
     const pageContent = await page.content();
     
-    // Method 1: Buscar miniaturas - pattern: imagenes/min/imagen+Números
-    // Esto evita capturar el logo que tiene otro formato
-    const allImgMatches = pageContent.match(/imagenes\/min\/imagen\d+\.[a-zA-Z]{3,4}/gi);
+    // Method 1: Buscar TODOS los patrones de imagen en el HTML
+    // Pattern más flexible: imagenes/ seguido de números
+    const allImgMatches = pageContent.match(/imagenes\/[0-9]+\.[a-zA-Z]{3,4}/gi);
     
     if (allImgMatches && allImgMatches.length > 0) {
       const uniqueImages = [...new Set(allImgMatches)];
       
       for (const imgPath of uniqueImages.slice(0, 5)) {
-        // Skip miniaturas si tenemos la imagen grande
-        if (imgPath.includes('/min/') && uniqueImages.some(i => !i.includes('/min/') && i.includes(imgPath.replace('/min/', '/'))) {
-          continue;
-        }
-        const fullUrl = `${SCRAPER_CONFIG.baseUrl}/${imgPath}`;
-        if (!product.imageUrls.includes(fullUrl)) {
-          product.imageUrls.push(fullUrl);
+        // Skip miniaturas - only keep main images (not in /min/)
+        if (!imgPath.includes('/min/')) {
+          const fullUrl = `${SCRAPER_CONFIG.baseUrl}/${imgPath}`;
+          if (!product.imageUrls.includes(fullUrl)) {
+            product.imageUrls.push(fullUrl);
+          }
         }
       }
     }
