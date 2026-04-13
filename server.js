@@ -1123,6 +1123,32 @@ app.get('/debug/product/:externalId', async (req, res) => {
   }
 });
 
+// Debug endpoint: list all products in a category
+app.get('/debug/category/:categoryId', async (req, res) => {
+  try {
+    if (!db) await connectDB();
+    
+    const products = await db.collection('products')
+      .find({ categories: req.params.categoryId, supplier: 'jotakp' })
+      .project({ externalId: 1, name: 1, sku: 1, imageUrls: 1 })
+      .limit(20)
+      .toArray();
+    
+    res.json({
+      category: req.params.categoryId,
+      count: products.length,
+      products: products.map(p => ({
+        externalId: p.externalId,
+        name: p.name?.substring(0, 60),
+        hasImage: p.imageUrls && p.imageUrls.length > 0,
+        sku: p.sku
+      }))
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // Endpoint: scrapear múltiples categorías (almacenamiento)
 app.post('/scrape-categories', async (req, res) => {
   if (!db) await connectDB();
