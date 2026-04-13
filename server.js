@@ -77,8 +77,11 @@ async function uploadImagesToCloudinary(imageUrls, supplier, externalId) {
       cloudUrls.push(imageUrl);
     }
     
-    await new Promise(r => setTimeout(r, 300));
+    await new Promise(r => setTimeout(r, 500)); // 500ms between images
   }
+  
+  // Extra delay between products to avoid overwhelming Cloudinary
+  await new Promise(r => setTimeout(r, 1000));
   
   return cloudUrls;
 }
@@ -819,9 +822,12 @@ const supplier = qSupplier ? String(qSupplier) : 'jotakp';
         cloudUrls.push(imageUrl);
       }
       
-      // Rate limit - wait between uploads
+      // Rate limit - wait between images (500ms)
       await new Promise(r => setTimeout(r, 500));
     }
+    
+    // Wait between products (1 second) to avoid overwhelming the server
+    await new Promise(r => setTimeout(r, 1000));
     
     // Update product with cloudinary URLs in BOTH fields
     await db.collection('products').updateOne(
