@@ -377,36 +377,50 @@ async function scrapeProductDetail(page, productUrl) {
     if (skuEl) product.sku = await skuEl.textContent() || '';
   } catch {}
   
-  // Images - multiple approaches for reliability
+// Images - get from detail page structure
   try {
-    // Method 1: data-src attribute (preferred)
-    const imgs = await page.locator('div.tg-img-overlay.artImg').all();
-    for (const img of imgs.slice(0, 5)) {
-      const src = await img.getAttribute('data-src');
-      if (src && src.includes('imagenes/')) {
-        // Make URL absolute if relative
-        const fullUrl = src.startsWith('http') ? src : `${SCRAPER_CONFIG.baseUrl}/${src}`;
+    // Method 1: Imagen grande en div.spinner-border.m-5 -> img
+    const mainImg = await page.locator('div.spinner-border.m-5 img').first();
+    if (mainImg) {
+      const src = await mainImg.getAttribute('src');
+      if (src && (src.includes('imagenes/') || src.includes('imagen'))) {
+        const fullUrl = src.startsWith('http') ? src : `${SCRAPER_CONFIG.baseUrl}/${src.replace(/^\//, '')}`;
         product.imageUrls.push(fullUrl);
       }
     }
     
-    // Method 2: Try to find images by filename pattern in any attribute
-    // Pattern: imagenes/ followed by numbers and extension
-    if (product.imageUrls.length === 0) {
-      const pageContent = await page.content();
-      const imgMatches = pageContent.match(/imagenes\/\d+\.[a-zA-Z]{3,4}/g);
-      if (imgMatches) {
-        const uniqueImages = [...new Set(imgMatches)];
-        for (const imgPath of uniqueImages.slice(0, 5)) {
-          const fullUrl = `${SCRAPER_CONFIG.baseUrl}/${imgPath}`;
+    // Method 2: Miniaturas en divs con background-image
+    const thumbs = await page.locator('div[style*="background-image"]').all();
+    for (const thumb of thumbs.slice(0, 5)) {
+      const style = await thumb.getAttribute('style');
+      const match = style?.match(/url\(["']?(imagenes\/min\/[^"')]+)["']?\)/);
+      if (match && match[1]) {
+        const fullUrl = `${SCRAPER_CONFIG.baseUrl}/${match[1]}`;
+        if (!product.imageUrls.includes(fullUrl)) {
           product.imageUrls.push(fullUrl);
         }
       }
     }
+    
+    // Method 3: Buscar en todo el HTML patrones de imagenes/
+    if (product.imageUrls.length === 0) {
+      const pageContent = await page.content();
+      // Buscar tanto imagenes/ como imagenes/min/
+      const imgMatches = pageContent.match(/imagenes\/min\/imagen\d+\.[a-zA-Z]{3,4}/g);
+      const normalMatches = pageContent.match(/imagenes\/\d{7,}\.[a-zA-Z]{3,4}/g);
+      
+      const allMatches = [...(imgMatches || []), ...(normalMatches || [])];
+      const uniqueImages = [...new Set(allMatches)];
+      
+      for (const imgPath of uniqueImages.slice(0, 5)) {
+        const fullUrl = `${SCRAPER_CONFIG.baseUrl}/${imgPath}`;
+        product.imageUrls.push(fullUrl);
+      }
+    }
   } catch (e) {
-    // Ignore image errors
+    console.log(`[Detail] Image error: ${e.message}`);
   }
-  
+
   return product;
 }
 
