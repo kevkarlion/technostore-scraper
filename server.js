@@ -1132,6 +1132,38 @@ app.post('/scrape-categories', async (req, res) => {
   }
 });
 
+// Endpoint: migrate cloudinaryUrls to imageUrls
+app.post('/migrate-images', async (req, res) => {
+  if (!db) await connectDB();
+  
+  const limit = parseInt(req.query.limit) || 100;
+  
+  // Find products that have cloudinaryUrls but empty imageUrls
+  const products = await db.collection('products')
+    .find({
+      cloudinaryUrls: { $exists: true, $ne: [] },
+      $or: [
+        { imageUrls: { $exists: false } },
+        { imageUrls: { $size: 0 } }
+      ]
+    })
+    .limit(limit)
+    .toArray();
+  
+  console.log(`[Migrate] Found ${products.length} products`);
+  
+  let migrated = 0;
+  for (const p of products) {
+    await db.collection('products').updateOne(
+      { _id: p._id },
+      { $set: { imageUrls: p.cloudinaryUrls } }
+    );
+    migrated++;
+  }
+  
+  res.json({ migrated, message: `Migrated ${migrated} products` });
+});
+
 app.listen(PORT, () => {
   console.log(`[Server] Scraping server on port ${PORT}`);
   connectDB().catch(console.error);
