@@ -363,18 +363,35 @@ async function scrapeProductDetail(page, productUrl) {
     if (skuEl) product.sku = await skuEl.textContent() || '';
   } catch {}
   
-  // Images
+  // Images - multiple approaches for reliability
   try {
+    // Method 1: data-src attribute (preferred)
     const imgs = await page.locator('div.tg-img-overlay.artImg').all();
     for (const img of imgs.slice(0, 5)) {
       const src = await img.getAttribute('data-src');
       if (src && src.includes('imagenes/')) {
-              // Make URL absolute if relative
-              const fullUrl = src.startsWith('http') ? src : `${SCRAPER_CONFIG.baseUrl}/${src}`;
-              product.imageUrls.push(fullUrl);
-            }
+        // Make URL absolute if relative
+        const fullUrl = src.startsWith('http') ? src : `${SCRAPER_CONFIG.baseUrl}/${src}`;
+        product.imageUrls.push(fullUrl);
+      }
     }
-  } catch {}
+    
+    // Method 2: Try to find images by filename pattern in any attribute
+    // Pattern: imagenes/ followed by numbers and extension
+    if (product.imageUrls.length === 0) {
+      const pageContent = await page.content();
+      const imgMatches = pageContent.match(/imagenes\/\d+\.[a-zA-Z]{3,4}/g);
+      if (imgMatches) {
+        const uniqueImages = [...new Set(imgMatches)];
+        for (const imgPath of uniqueImages.slice(0, 5)) {
+          const fullUrl = `${SCRAPER_CONFIG.baseUrl}/${imgPath}`;
+          product.imageUrls.push(fullUrl);
+        }
+      }
+    }
+  } catch (e) {
+    // Ignore image errors
+  }
   
   return product;
 }
