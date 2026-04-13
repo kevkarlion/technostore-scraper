@@ -7,16 +7,38 @@ import { ScraperError } from "./types";
 import path from "path";
 import os from "os";
 import crypto from "crypto";
+import { MongoClient } from "mongodb";
 
-// Use existing MongoDB from server.ts via global
-const getDb = () => {
-  // This will be provided by the Express server
-  return (global as any).db;
-};
+// Get DB - try global first, then direct connection
+let dbInstance: any = null;
+let mongoClient: MongoClient | null = null;
+
+async function getDb(): Promise<any> {
+  // First try global (from Express server)
+  if ((global as any).db) {
+    return (global as any).db;
+  }
+  
+  // Fallback to direct connection
+  if (!dbInstance) {
+    const MONGO_URI = process.env.MONGO_URI;
+    const DB_NAME = process.env.DB_NAME || "technostore";
+    
+    if (!MONGO_URI) {
+      throw new Error("MONGO_URI is required");
+    }
+    
+    mongoClient = new MongoClient(MONGO_URI);
+    await mongoClient.connect();
+    dbInstance = mongoClient.db(DB_NAME);
+  }
+  
+  return dbInstance;
+}
 
 const productRepository = {
   async upsert(product: any) {
-    const db = getDb();
+    const db = await getDb();
     const collection = db.collection('products');
     const existing = await collection.findOne({ externalId: product.externalId, supplier: 'jotakp' });
     
@@ -36,17 +58,125 @@ const productRepository = {
       await collection.insertOne({ ...product, supplier: 'jotakp', status: 'active', createdAt: new Date(), updatedAt: new Date() });
       return { created: true, updated: false };
     }
+  },
+  
+  async atomicUpsertByExternalId(product: any): Promise<{ created: boolean; updated: boolean; changes: string[] }> {
+    const db = await getDb();
+    const collection = db.collection('products');
+    const now = new Date();
+    
+    const existing = await collection.findOne({ externalId: product.externalId, supplier: product.supplier || 'jotakp' });
+    
+    if (!existing) {
+      await collection.insertOne({ ...product, supplier: product.supplier || 'jotakp', status: 'active', lastSyncedAt: now, createdAt: now, updatedAt: now });
+      return { created: true, updated: false, changes: ['CREATE'] };
+    }
+    
+    const changes: string[] = [];
+    const updateOps: any = { lastSyncedAt: now, updatedAt: now };
+    
+    const fieldsToCompare = ['name', 'description', 'price', 'priceRaw', 'currency', 'stock', 'sku', 'categories', 'imageUrls'];
+    
+    for (const field of fieldsToCompare) {
+      const existingVal = existing[field];
+      const newVal = product[field];
+      if (JSON.stringify(existingVal) !== JSON.stringify(newVal) && newVal !== undefined) {
+        updateOps[field] = newVal;
+        changes.push(field);
+      }
+    }
+    
+    if (changes.length > 0) {
+      await collection.updateOne({ _id: existing._id }, { $set: updateOps });
+      return { created: false, updated: true, changes };
+    }
+    
+    return { created: false, updated: false, changes: [] };
+  },
+  
+  async markDiscontinued(supplier: string, scrapedIds: string[]): Promise<number> {
+    const db = await getDb();
+    const result = await db.collection('products').updateMany(
+      { supplier, externalId: { $nin: scrapedIds }, status: 'active' },
+      { $set: { status: 'discontinued', discontinuedAt: new Date() } }
+    );
+    return result.modifiedCount;
+  },
+  
+  async ensureIndexes() {
+    const db = await getDb();
+    const collection = db.collection('products');
+    await collection.createIndex({ externalId: 1, supplier: 1 }, { unique: true });
+    await collection.createIndex({ supplier: 1, status: 1 });
+    await collection.createIndex({ categories: 1 });
   }
 };
 
 const scraperRunRepository = {
   async create(run: any) {
-    const db = getDb();
+    const db = await getDb();
     return await db.collection('scraper_runs').insertOne({ ...run, createdAt: new Date() });
   },
   async update(runId: string, updates: any) {
-    const db = getDb();
+    const db = await getDb();
     return await db.collection('scraper_runs').updateOne({ runId }, { $set: updates });
+  },
+  async ensureIndexes() {
+    const db = await getDb();
+    const collection = db.collection('scraper_runs');
+    await collection.createIndex({ runId: 1 }, { unique: true });
+    await collection.createIndex({ status: 1 });
+    await collection.createIndex({ createdAt: -1 });
+  },
+  async cleanupStaleRuns(hoursOld: number): Promise<number> {
+    const db = await getDb();
+    const cutoff = new Date(Date.now() - hoursOld * 60 * 60 * 1000);
+    const result = await db.collection('scraper_runs').updateMany(
+      { status: 'in_progress', updatedAt: { $lt: cutoff } },
+      { $set: { status: 'stale' } }
+    );
+    return result.modifiedCount;
+  },
+  async findIncomplete() {
+    const db = await getDb();
+    return db.collection('scraper_runs').findOne({ status: 'in_progress' });
+  },
+  async incrementResumeCount(runId: string) {
+    const db = await getDb();
+    await db.collection('scraper_runs').updateOne(
+      { runId },
+      { $inc: { resumeCount: 1 }, $set: { updatedAt: new Date() } }
+    );
+  },
+  async markCompleted(runId: string, stats: { productsScraped: number; productsSaved: number; durationMs: number }) {
+    const db = await getDb();
+    await db.collection('scraper_runs').updateOne(
+      { runId },
+      { 
+        $set: { 
+          status: 'completed', 
+          completedAt: new Date(),
+          productsScraped: stats.productsScraped,
+          productsSaved: stats.productsSaved,
+          durationMs: stats.durationMs,
+          updatedAt: new Date()
+        } 
+      }
+    );
+  },
+  async markFailed(runId: string, error: string) {
+    const db = await getDb();
+    await db.collection('scraper_runs').updateOne(
+      { runId },
+      { $set: { status: 'failed', errorMessage: error, updatedAt: new Date() } }
+    );
+  },
+  async updateCheckpoint(runId: string, checkpoint: any) {
+    const db = await getDb();
+    await db.collection('scraper_runs').updateOne(
+      { runId },
+      { $set: { ...checkpoint, updatedAt: new Date() } }
+    );
   }
 };
 

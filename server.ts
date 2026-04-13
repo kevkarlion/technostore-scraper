@@ -4,8 +4,8 @@ import { chromium } from 'playwright';
 import { MongoClient } from 'mongodb';
 import crypto from 'crypto';
 
-// Import new scraper modules
-import { runScraper, runIncrementalScraper, jotakpCategories } from './src/lib/scraper/index';
+// Import new scraper modules (use alias to avoid conflict)
+import { runScraper, runIncrementalScraper as runIncrementalScraperNew, jotakpCategories } from './src/lib/scraper/index';
 
 // CONFIG - with defaults and logging
 const SUPPLIER_URL = process.env.SUPPLIER_URL || 'https://jotakp.dyndns.org';
@@ -52,6 +52,7 @@ const JOTAKP_CATEGORIES = [
   { id: 'discos-ssd', idsubrubro1: 156 },
   { id: 'memorias-flash', idsubrubro1: 12 },
   { id: 'pendrive', idsubrubro1: 5 },
+  { id: 'memorias', idsubrubro1: 1 },
   { id: 'auricular-bluetooth', idsubrubro1: 149 },
   { id: 'auricular-cableado', idsubrubro1: 36 },
   { id: 'microfonos', idsubrubro1: 45 },
@@ -355,10 +356,10 @@ app.post('/scraper/run', async (req, res) => {
 });
 
 app.post('/scraper/incremental', async (req, res) => {
-  // Run incremental scraper with pre-check
+  // Run incremental scraper with pre-check (using new module)
   try {
     const { forceFullScrape } = req.body;
-    const result = await runIncrementalScraper(forceFullScrape);
+    const result = await runIncrementalScraperNew(forceFullScrape);
     res.json(result);
   } catch (error) {
     console.error('[Incremental] Error:', error);
