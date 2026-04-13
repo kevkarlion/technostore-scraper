@@ -368,7 +368,11 @@ async function scrapeProductDetail(page, productUrl) {
     const imgs = await page.locator('div.tg-img-overlay.artImg').all();
     for (const img of imgs.slice(0, 5)) {
       const src = await img.getAttribute('data-src');
-      if (src && src.includes('imagenes/')) product.imageUrls.push(src);
+      if (src && src.includes('imagenes/')) {
+              // Make URL absolute if relative
+              const fullUrl = src.startsWith('http') ? src : `${SCRAPER_CONFIG.baseUrl}/${src}`;
+              product.imageUrls.push(fullUrl);
+            }
     }
   } catch {}
   
