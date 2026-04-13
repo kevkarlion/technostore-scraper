@@ -390,12 +390,12 @@ async function scrapeProductDetail(page, productUrl) {
       const uniqueImages = [...new Set(allImgMatches)];
       
       for (const imgPath of uniqueImages.slice(0, 5)) {
-        // Skip miniaturas si tenemos la imagen grande
-        if (imgPath.includes('/min/') && uniqueImages.some(i => !i.includes('/min/') && i.includes(imgPath.replace('/min/', '/'))) {
+        // Skip miniaturas - only keep main images
+        if (imgPath.includes('/min/')) {
           continue;
         }
         const fullUrl = `${SCRAPER_CONFIG.baseUrl}/${imgPath}`;
-        if (!product.imageUrls.includes(fullUrl)) {
+        if (product.imageUrls.indexOf(fullUrl) === -1) {
           product.imageUrls.push(fullUrl);
         }
       }
