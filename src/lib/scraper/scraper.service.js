@@ -180,6 +180,12 @@ var productRepository = {
                     case 4:
                         changes = [];
                         updateOps = { lastSyncedAt: now, updatedAt: now };
+                        // If product was discontinued but is now found again, reactivate it
+                        if (existing.status === 'discontinued') {
+                            updateOps.status = 'active';
+                            updateOps.discontinuedAt = null;
+                            changes.push('status');
+                        }
                         fieldsToCompare = ['name', 'description', 'price', 'priceRaw', 'currency', 'stock', 'sku', 'categories', 'imageUrls'];
                         for (_i = 0, fieldsToCompare_1 = fieldsToCompare; _i < fieldsToCompare_1.length; _i++) {
                             field = fieldsToCompare_1[_i];

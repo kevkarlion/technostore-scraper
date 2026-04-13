@@ -75,6 +75,13 @@ const productRepository = {
     const changes: string[] = [];
     const updateOps: any = { lastSyncedAt: now, updatedAt: now };
     
+    // If product was discontinued but is now found again, reactivate it
+    if (existing.status === 'discontinued') {
+      updateOps.status = 'active';
+      updateOps.discontinuedAt = null;
+      changes.push('status');
+    }
+    
     const fieldsToCompare = ['name', 'description', 'price', 'priceRaw', 'currency', 'stock', 'sku', 'categories', 'imageUrls'];
     
     for (const field of fieldsToCompare) {
