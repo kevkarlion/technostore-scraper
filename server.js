@@ -1099,6 +1099,30 @@ app.get('/status', async (req, res) => {
   }
 });
 
+// Debug endpoint: get product by externalId
+app.get('/debug/product/:externalId', async (req, res) => {
+  try {
+    if (!db) await connectDB();
+    
+    const product = await db.collection('products').findOne({ externalId: req.params.externalId });
+    
+    if (!product) {
+      return res.json({ error: 'Product not found', externalId: req.params.externalId });
+    }
+    
+    res.json({
+      externalId: product.externalId,
+      name: product.name,
+      description: product.description?.substring(0, 200),
+      sku: product.sku,
+      imageUrls: product.imageUrls,
+      categories: product.categories
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // Endpoint: scrapear múltiples categorías (almacenamiento)
 app.post('/scrape-categories', async (req, res) => {
   if (!db) await connectDB();
