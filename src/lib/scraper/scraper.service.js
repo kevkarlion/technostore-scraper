@@ -1713,7 +1713,7 @@ var ScraperService = /** @class */ (function () {
      */
     ScraperService.prototype.run = function () {
         return __awaiter(this, void 0, void 0, function () {
-            var startTime, result, page, cleanedCount, incompleteRun, jotakpCategories_1, validCategories, categoriesToProcess, _a, browser, context, rawProducts, _b, products, errors, _i, products_1, p, i, product, cloudUrls, imageError_1, seenExternalIds, created, updated, unchanged, _c, products_2, product, result_1, dbError_1, errorMsg, discontinuedCount, category, categoryId, db, productsCollection, existingProducts, existingIds, scrapedIds_1, disappearedIds, result_2, error_10, message, scraperError;
+            var startTime, result, page, cleanedCount, incompleteRun, jotakpCategories_1, validCategories, categoriesToProcess, _a, browser, context, rawProducts, _b, products, errors, _i, products_1, p, i, product, cloudUrls, imageError_1, seenExternalIds, created, updated, unchanged, _c, products_2, product, result_1, dbError_1, errorMsg, discontinuedCount, category, categoryId, db, productsCollection, existingProducts, existingIds, scrapedIds_1, disappearedIds, result_2, categoryId, db, productsCollection, existingProducts, existingIds, scrapedIds_2, disappearedIds, result_3, error_10, message, scraperError;
             var _d;
             var _this = this;
             return __generator(this, function (_e) {
@@ -1731,7 +1731,7 @@ var ScraperService = /** @class */ (function () {
                         page = null;
                         _e.label = 1;
                     case 1:
-                        _e.trys.push([1, 43, 47, 51]);
+                        _e.trys.push([1, 48, 52, 56]);
                         // Ensure indexes exist
                         return [4 /*yield*/, scraperRunRepository.ensureIndexes()];
                     case 2:
@@ -1955,72 +1955,107 @@ var ScraperService = /** @class */ (function () {
                         discontinuedCount = result_2.modifiedCount;
                         console.log("[Scraper] Marked ".concat(discontinuedCount, " products as discontinued in ").concat(categoryId));
                         _e.label = 36;
-                    case 36: return [3 /*break*/, 40];
+                    case 36: return [3 /*break*/, 45];
                     case 37:
-                        if (!(this.request.categoryId === undefined)) return [3 /*break*/, 39];
+                        if (!this.request.categoryId) return [3 /*break*/, 42];
+                        categoryId = this.request.categoryId;
+                        console.log("[Scraper] Marking discontinued products for category: ".concat(categoryId));
+                        return [4 /*yield*/, getDb()];
+                    case 38:
+                        db = _e.sent();
+                        productsCollection = db.collection("products");
+                        return [4 /*yield*/, productsCollection.find({
+                                supplier: this.config.supplier,
+                                categories: categoryId,
+                                status: "active"
+                            }).toArray()];
+                    case 39:
+                        existingProducts = _e.sent();
+                        existingIds = existingProducts.map(function (p) { return p.externalId; });
+                        scrapedIds_2 = seenExternalIds;
+                        disappearedIds = existingIds.filter(function (id) { return !scrapedIds_2.includes(id); });
+                        if (!(disappearedIds.length > 0)) return [3 /*break*/, 41];
+                        return [4 /*yield*/, productsCollection.updateMany({
+                                supplier: this.config.supplier,
+                                externalId: { $in: disappearedIds },
+                                categories: categoryId
+                            }, {
+                                $set: {
+                                    status: "discontinued",
+                                    discontinuedAt: new Date()
+                                }
+                            })];
+                    case 40:
+                        result_3 = _e.sent();
+                        discontinuedCount = result_3.modifiedCount;
+                        console.log("[Scraper] Marked ".concat(discontinuedCount, " products as discontinued in ").concat(categoryId));
+                        _e.label = 41;
+                    case 41: return [3 /*break*/, 45];
+                    case 42:
+                        if (!(this.request.categoryId === undefined)) return [3 /*break*/, 44];
                         // Scrapeo completo de todas las categorías
                         console.log("[Scraper] Marking discontinued products (full scrape)...");
                         return [4 /*yield*/, productRepository.markDiscontinued(this.config.supplier, seenExternalIds)];
-                    case 38:
+                    case 43:
                         discontinuedCount = _e.sent();
-                        return [3 /*break*/, 40];
-                    case 39:
+                        return [3 /*break*/, 45];
+                    case 44:
                         console.log("[Scraper] Skipping mark discontinued (category-specific scrape)");
-                        _e.label = 40;
-                    case 40:
+                        _e.label = 45;
+                    case 45:
                         result.created = created;
                         result.updated = updated;
                         result.errors.push("Unchanged: ".concat(unchanged, ", Discontinued: ").concat(discontinuedCount));
-                        if (!this.currentRun) return [3 /*break*/, 42];
+                        if (!this.currentRun) return [3 /*break*/, 47];
                         return [4 /*yield*/, scraperRunRepository.markCompleted(this.currentRun.runId, {
                                 productsScraped: this.productsScrapedCount,
                                 productsSaved: this.productsSavedCount,
                                 durationMs: result.durationMs,
                             })];
-                    case 41:
+                    case 46:
                         _e.sent();
-                        _e.label = 42;
-                    case 42:
+                        _e.label = 47;
+                    case 47:
                         result.success = true;
                         console.log("[Scraper] Completed: ".concat(created, " created, ").concat(updated, " updated, ").concat(unchanged, " unchanged, ").concat(discontinuedCount, " discontinued"));
-                        return [3 /*break*/, 51];
-                    case 43:
+                        return [3 /*break*/, 56];
+                    case 48:
                         error_10 = _e.sent();
                         message = error_10 instanceof Error ? error_10.message : "Unknown error";
                         scraperError = error_10;
                         result.errors.push("Error: ".concat(message));
                         console.error("[Scraper] Pipeline failed:", message);
-                        if (!this.currentRun) return [3 /*break*/, 46];
+                        if (!this.currentRun) return [3 /*break*/, 51];
                         return [4 /*yield*/, scraperRunRepository.updateCheckpoint(this.currentRun.runId, {
                                 currentCategoryIndex: this.currentCategoryIndex,
                                 lastPageNumber: this.currentPageNum,
                                 productsScraped: this.productsScrapedCount,
                                 productsSaved: this.productsSavedCount,
                             })];
-                    case 44:
+                    case 49:
                         _e.sent();
                         return [4 /*yield*/, scraperRunRepository.markFailed(this.currentRun.runId, message)];
-                    case 45:
+                    case 50:
                         _e.sent();
-                        _e.label = 46;
-                    case 46:
+                        _e.label = 51;
+                    case 51:
                         // Provide more specific error codes
                         if (scraperError.code === "AUTH_FAILED") {
                             throw error_10; // Re-throw auth errors
                         }
-                        return [3 /*break*/, 51];
-                    case 47:
+                        return [3 /*break*/, 56];
+                    case 52:
                         result.durationMs = Date.now() - startTime;
-                        if (!page) return [3 /*break*/, 49];
+                        if (!page) return [3 /*break*/, 54];
                         return [4 /*yield*/, page.close()];
-                    case 48:
+                    case 53:
                         _e.sent();
-                        _e.label = 49;
-                    case 49: return [4 /*yield*/, this.closeBrowser()];
-                    case 50:
+                        _e.label = 54;
+                    case 54: return [4 /*yield*/, this.closeBrowser()];
+                    case 55:
                         _e.sent();
                         return [7 /*endfinally*/];
-                    case 51: return [2 /*return*/, result];
+                    case 56: return [2 /*return*/, result];
                 }
             });
         });

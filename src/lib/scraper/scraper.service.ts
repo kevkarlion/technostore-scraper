@@ -1374,6 +1374,41 @@ export class ScraperService {
             console.log(`[Scraper] Marked ${discontinuedCount} products as discontinued in ${categoryId}`);
           }
         }
+      } else if (this.request.categoryId) {
+        // Scrapeo por categoryId (sin idsubrubro1 específico) - también marcar descontinuados
+        const categoryId = this.request.categoryId;
+        console.log(`[Scraper] Marking discontinued products for category: ${categoryId}`);
+        
+        const db = await getDb();
+        const productsCollection = db.collection("products");
+        const existingProducts = await productsCollection.find({
+          supplier: this.config.supplier,
+          categories: categoryId,
+          status: "active"
+        }).toArray();
+        
+        const existingIds = existingProducts.map(p => p.externalId);
+        const scrapedIds = seenExternalIds;
+        
+        const disappearedIds = existingIds.filter(id => !scrapedIds.includes(id));
+        
+        if (disappearedIds.length > 0) {
+          const result = await productsCollection.updateMany(
+            {
+              supplier: this.config.supplier,
+              externalId: { $in: disappearedIds },
+              categories: categoryId
+            },
+            {
+              $set: {
+                status: "discontinued",
+                discontinuedAt: new Date()
+              }
+            }
+          );
+          discontinuedCount = result.modifiedCount;
+          console.log(`[Scraper] Marked ${discontinuedCount} products as discontinued in ${categoryId}`);
+        }
       } else if (this.request.categoryId === undefined) {
         // Scrapeo completo de todas las categorías
         console.log("[Scraper] Marking discontinued products (full scrape)...");
