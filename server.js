@@ -735,4 +735,28 @@ app.post('/scraper/incremental', function (req, res) { return __awaiter(void 0, 
         }
     });
 }); });
+// Debug endpoint to fix discontinued products
+app.post('/debug/fix-discontinued', function (req, res) { return __awaiter(void 0, void 0, void 0, function () {
+    var category, db_1, result, error_5;
+    return __generator(this, function (_a) {
+        switch (_a.label) {
+            case 0:
+                _a.trys.push([0, 3, , 4]);
+                category = req.body.category;
+                return [4 /*yield*/, getDb()];
+            case 1:
+                db_1 = _a.sent();
+                return [4 /*yield*/, db_1.collection('products').updateMany({ categories: category, status: 'discontinued' }, { $set: { status: 'active' }, $unset: { discontinuedAt: '' } })];
+            case 2:
+                result = _a.sent();
+                res.json({ success: true, modifiedCount: result.modifiedCount });
+                return [3 /*break*/, 4];
+            case 3:
+                error_5 = _a.sent();
+                res.status(500).json({ success: false, error: String(error_5) });
+                return [3 /*break*/, 4];
+            case 4: return [2 /*return*/];
+        }
+    });
+}); });
 app.listen(PORT, function () { console.log('[Server] Scraper server on port', PORT); });

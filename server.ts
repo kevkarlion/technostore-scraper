@@ -367,4 +367,19 @@ app.post('/scraper/incremental', async (req, res) => {
   }
 });
 
+// Debug endpoint to fix discontinued products
+app.post('/debug/fix-discontinued', async (req, res) => {
+  try {
+    const { category } = req.body;
+    const db = await getDb();
+    const result = await db.collection('products').updateMany(
+      { categories: category, status: 'discontinued' },
+      { $set: { status: 'active' }, $unset: { discontinuedAt: '' } }
+    );
+    res.json({ success: true, modifiedCount: result.modifiedCount });
+  } catch (error) {
+    res.status(500).json({ success: false, error: String(error) });
+  }
+});
+
 app.listen(PORT, () => { console.log('[Server] Scraper server on port', PORT); });
