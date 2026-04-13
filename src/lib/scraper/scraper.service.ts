@@ -186,6 +186,10 @@ async function getChromiumExecutable(): Promise<string | undefined> {
   const { execSync } = require("child_process");
   
   const possiblePaths = [
+    // System chromium (Railway, Docker)
+    "/usr/bin/chromium",
+    "/usr/bin/chromium-browser",
+    "/usr/bin/google-chrome",
     // Vercel cache
     "/vercel/.cache/ms-playwright/chromium-1208/chrome-linux64/chrome",
     "/vercel/.cache/ms-playwright/chromium_headless_shell-1208/chrome-headless-shell-linux64/chrome-headless-shell",
@@ -194,6 +198,9 @@ async function getChromiumExecutable(): Promise<string | undefined> {
     "/home/sbx_user1051/.cache/ms-playwright/chromium_headless_shell-1208/chrome-headless-shell-linux64/chrome-headless-shell",
     // HOME fallback
     path.join(os.homedir() || "/root", ".cache", "ms-playwright", "chromium-1208", "chrome-linux64", "chrome"),
+    // Playwright default
+    "/tmp/ms-playwright/chromium-1208/chrome-linux64/chrome",
+    "/tmp/ms-playwright/chromium_headless_shell-1208/chrome-headless-shell-linux64/chrome-headless-shell",
   ];
   
   console.log("[Scraper] Looking for chromium...");

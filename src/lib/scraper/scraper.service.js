@@ -403,6 +403,10 @@ function getChromiumExecutable() {
             fs = require("fs");
             execSync = require("child_process").execSync;
             possiblePaths = [
+                // System chromium (Railway, Docker)
+                "/usr/bin/chromium",
+                "/usr/bin/chromium-browser",
+                "/usr/bin/google-chrome",
                 // Vercel cache
                 "/vercel/.cache/ms-playwright/chromium-1208/chrome-linux64/chrome",
                 "/vercel/.cache/ms-playwright/chromium_headless_shell-1208/chrome-headless-shell-linux64/chrome-headless-shell",
@@ -411,6 +415,9 @@ function getChromiumExecutable() {
                 "/home/sbx_user1051/.cache/ms-playwright/chromium_headless_shell-1208/chrome-headless-shell-linux64/chrome-headless-shell",
                 // HOME fallback
                 path_1.default.join(os_1.default.homedir() || "/root", ".cache", "ms-playwright", "chromium-1208", "chrome-linux64", "chrome"),
+                // Playwright default
+                "/tmp/ms-playwright/chromium-1208/chrome-linux64/chrome",
+                "/tmp/ms-playwright/chromium_headless_shell-1208/chrome-headless-shell-linux64/chrome-headless-shell",
             ];
             console.log("[Scraper] Looking for chromium...");
             for (_i = 0, possiblePaths_1 = possiblePaths; _i < possiblePaths_1.length; _i++) {
