@@ -3,9 +3,74 @@ const express = require('express');
 const { chromium } = require('playwright');
 const { MongoClient } = require('mongodb');
 const crypto = require('crypto');
+const https = require('https');
+const http = require('http');
+const { v2: cloudinary } = require('cloudinary');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+
+// ============================================
+// CLOUDFINARY UPLOAD (for new products only)
+// ============================================
+
+function initCloudinary() {
+  const cloudName = process.env.CLOUDINARY_CLOUD_NAME;
+  const apiKey = process.env.CLOUDINARY_API_KEY;
+  const apiSecret = process.env.CLOUDINARY_API_SECRET;
+  
+  if (cloudName && apiKey && apiSecret) {
+    cloudinary.config({
+      cloud_name: cloudName,
+      api_key: apiKey,
+      api_secret: apiSecret,
+    });
+    return true;
+  }
+  return false;
+}
+
+// Upload images to Cloudinary for a product
+async function uploadImagesToCloudinary(imageUrls, supplier, externalId) {
+  if (!imageUrls || imageUrls.length === 0) return [];
+  
+  const cloudinaryEnabled = initCloudinary();
+  if (!cloudinaryEnabled) {
+    console.log('[Cloudinary] Not configured, skipping upload');
+    return imageUrls;
+  }
+  
+  const cloudUrls = [];
+  
+  for (let i = 0; i < imageUrls.length; i++) {
+    const imageUrl = imageUrls[i];
+    if (!imageUrl || imageUrl.includes('cloudinary')) {
+      cloudUrls.push(imageUrl);
+      continue;
+    }
+    
+    try {
+      const publicId = `${supplier}/${externalId}_${i}`;
+      const result = await cloudinary.uploader.upload(imageUrl, {
+        public_id: publicId,
+        folder: `technostore/${supplier}`,
+        transformation: [
+          { width: 800, height: 800, crop: 'limit' },
+          { quality: 'auto', fetch_format: 'auto' },
+        ],
+      });
+      cloudUrls.push(result.secure_url);
+      console.log(`[Cloudinary] Uploaded: ${externalId} #${i}`);
+    } catch (e) {
+      console.error(`[Cloudinary] Failed: ${imageUrl}`, e.message);
+      cloudUrls.push(imageUrl);
+    }
+    
+    await new Promise(r => setTimeout(r, 300));
+  }
+  
+  return cloudUrls;
+}
 
 // ============================================
 // MONGODB CONNECTION
@@ -559,8 +624,23 @@ async function runIncrementalScraper() {
           
           // Save each product
           for (const product of products) {
+            // Upload images to Cloudinary for ALL products (new and updated)
+            let cloudinaryUrls = product.imageUrls;
+            
+            // Check if already has cloudinary images
+            const existingProduct = await productRepository.findByExternalId(product.externalId, 'jotakp');
+            const hasCloudinary = existingProduct?.imageUrls?.some(url => url.includes('cloudinary'));
+            
+            if (!hasCloudinary && product.imageUrls && product.imageUrls.length > 0) {
+              console.log(`[Cloudinary] Uploading images for product: ${product.externalId}`);
+              cloudinaryUrls = await uploadImagesToCloudinary(product.imageUrls, 'jotakp', product.externalId);
+            } else if (hasCloudinary) {
+              console.log(`[Cloudinary] Already has cloudinary, skipping: ${product.externalId}`);
+            }
+            
             const result = await productRepository.upsert({
               ...product,
+              imageUrls: cloudinaryUrls,
               externalId: product.externalId,
               supplier: 'jotakp',
               categories: [cat.id],
@@ -635,6 +715,167 @@ app.post('/run', async (req, res) => {
 
 app.get('/health', (req, res) => {
   res.json({ status: 'ok' });
+});
+
+// Endpoint: reupload images to Cloudinary
+app.post('/reupload', async (req, res) => {
+  if (!db) await connectDB();
+  
+  // Config Cloudinary
+  const cloudName = process.env.CLOUDINARY_CLOUD_NAME;
+  const apiKey = process.env.CLOUDINARY_API_KEY;
+  const apiSecret = process.env.CLOUDINARY_API_SECRET;
+  
+  if (!cloudName || !apiKey || !apiSecret) {
+    return res.status(500).json({ error: 'Cloudinary not configured' });
+  }
+  
+  cloudinary.config({
+    cloud_name: cloudName,
+    api_key: apiKey,
+    api_secret: apiSecret,
+  });
+  
+  // Get query params safely (express doesn't give types)
+  const qLimit = req.query.limit;
+  const qSupplier = req.query.supplier;
+  
+  const limit = qLimit ? parseInt(String(qLimit)) : 10;
+const supplier = qSupplier ? String(qSupplier) : 'jotakp';
+  
+  // Find products without Cloudinary URL (have local imageUrls but not cloudinary)
+  const products = await db.collection('products')
+    .find({ 
+      supplier: supplier,
+      imageUrls: { $exists: true, $ne: [] },
+      $or: [
+        { cloudinaryUrls: { $exists: false } },
+        { cloudinaryUrls: { $size: 0 } }
+      ]
+    })
+    .limit(limit)
+    .toArray();
+  
+  const results = { uploaded: 0, failed: 0, products: [] };
+  
+  for (const product of products) {
+    const cloudUrls = [];
+    
+    for (let i = 0; i < (product.imageUrls || []).length; i++) {
+      const imageUrl = product.imageUrls[i];
+      
+      if (!imageUrl || imageUrl.includes('cloudinary')) {
+        cloudUrls.push(imageUrl);
+        continue;
+      }
+      
+      try {
+        const publicId = `${supplier}/${product.externalId}_${i}`;
+        
+        const result = await cloudinary.uploader.upload(imageUrl, {
+          public_id: publicId,
+          folder: `technostore/${supplier}`,
+          transformation: [
+            { width: 800, height: 800, crop: 'limit' },
+            { quality: 'auto', fetch_format: 'auto' },
+          ],
+        });
+        
+        cloudUrls.push(result.secure_url);
+        console.log(`[Cloudinary] Uploaded: ${product.externalId} #${i}`);
+      } catch (e) {
+        console.error(`[Cloudinary] Failed: ${imageUrl}`, e.message);
+        cloudUrls.push(imageUrl);
+      }
+      
+      // Rate limit - wait between uploads
+      await new Promise(r => setTimeout(r, 500));
+    }
+    
+    // Update product with cloudinary URLs
+    await db.collection('products').updateOne(
+      { _id: product._id },
+      { $set: { cloudinaryUrls: cloudUrls, lastSyncedAt: new Date() } }
+    );
+    
+    results.uploaded++;
+    results.products.push({
+      externalId: product.externalId,
+      name: product.name?.substring(0, 40),
+      images: cloudUrls.length
+    });
+  }
+  
+  res.json({
+    ...results,
+    message: `Procesados ${results.uploaded} productos`
+  });
+});
+
+// Endpoint: último scrapeo
+app.get('/last-run', async (req, res) => {
+  if (!db) await connectDB();
+  
+  // Últimas categorías actualizadas
+  const lastScrapes = await db.collection('scraperStates')
+    .find({ lastScrapeAt: { $exists: true } })
+    .sort({ lastScrapeAt: -1 })
+    .limit(10)
+    .toArray();
+  
+  // Productos nuevos/actualizados en las últimas 24h
+  const recentProducts = await db.collection('products')
+    .find({ 
+      supplier: 'jotakp',
+      lastSyncedAt: { $gte: new Date(Date.now() - 24*60*60*1000) }
+    })
+    .toArray();
+  
+  res.json({
+    lastScrapes: lastScrapes.map(s => ({
+      category: s.categoryId,
+      products: s.productCount,
+      date: s.lastScrapeAt
+    })),
+    recentProducts: {
+      total: recentProducts.length,
+      active: recentProducts.filter(p => p.status === 'active').length,
+      discontinued: recentProducts.filter(p => p.status === 'discontinued').length
+    }
+  });
+});
+
+// Endpoint: productos actualizados recientemente
+app.get('/updates', async (req, res) => {
+  if (!db) await connectDB();
+  
+  const hours = parseInt(req.query.hours) || 24;
+  const since = new Date(Date.now() - hours * 60 * 60 * 1000);
+  
+  const updates = await db.collection('products').find({
+    supplier: 'jotakp',
+    lastSyncedAt: { $gte: since }
+  }).sort({ lastSyncedAt: -1 }).limit(50).toArray();
+  
+  // Agrupar por fecha
+  const byDate = {};
+  for (const p of updates) {
+    const date = new Date(p.lastSyncedAt).toISOString().split('T')[0];
+    byDate[date] = byDate[date] || [];
+    byDate[date].push({
+      name: p.name?.substring(0, 50),
+      price: p.price,
+      externalId: p.externalId,
+      category: p.categories?.[0],
+      status: p.status
+    });
+  }
+  
+  res.json({
+    period: `últimas ${hours} horas`,
+    total: updates.length,
+    byDate
+  });
 });
 
 app.get('/status', async (req, res) => {
