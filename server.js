@@ -1035,6 +1035,102 @@ app.get('/status', async (req, res) => {
   }
 });
 
+// Endpoint: scrapear múltiples categorías (almacenamiento)
+app.post('/scrape-categories', async (req, res) => {
+  if (!db) await connectDB();
+  
+  const { categoryIds } = req.body; // Array de {categoryId, idsubrubro1}
+  
+  if (!categoryIds || !Array.isArray(categoryIds)) {
+    return res.status(400).json({ error: 'categoryIds array required' });
+  }
+  
+  console.log(`[Bulk] Scraping ${categoryIds.length} categorías...`);
+  
+  const chromiumPath = process.env.CHROMIUM_PATH || '/usr/bin/chromium';
+  const browser = await chromium.launch({
+    headless: true,
+    executablePath: chromiumPath,
+    args: ['--no-sandbox', '--disable-setuid-sandbox']
+  });
+  
+  const results = { categories: 0, products: 0, images: 0 };
+  
+  try {
+    // Login
+    const context = await browser.newContext();
+    const loginPage = await context.newPage();
+    
+    await loginPage.goto(SCRAPER_CONFIG.loginUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await loginPage.waitForTimeout(3000);
+    
+    const allInputs = await loginPage.locator('input:not([type="hidden"]):visible').all();
+    if (allInputs.length >= 2) {
+      await allInputs[0].fill(SCRAPER_CONFIG.email);
+      await allInputs[1].fill(SCRAPER_CONFIG.password);
+      const submitBtn = await loginPage.locator('input[type="submit"], button').first();
+      await submitBtn.click();
+    }
+    
+    await loginPage.waitForLoadState('networkidle');
+    await loginPage.waitForTimeout(2000);
+    await loginPage.close();
+    
+    // Process each category
+    for (const cat of categoryIds) {
+      console.log(`[Bulk] Scraping: ${cat.categoryId}`);
+      
+      const products = await scrapeCategoryProducts(
+        cat.categoryId, 
+        cat.idsubrubro1, 
+        SCRAPER_CONFIG.baseUrl, 
+        browser, 
+        context
+      );
+      
+      // Upload images and save
+      for (const product of products) {
+        if (product.imageUrls && product.imageUrls.length > 0) {
+          const cloudUrls = await uploadImagesToCloudinary(
+            product.imageUrls, 
+            'jotakp', 
+            product.externalId
+          );
+          product.imageUrls = cloudUrls;
+          results.images += cloudUrls.length;
+        }
+        
+        await productRepository.upsert({
+          ...product,
+          externalId: product.externalId,
+          supplier: 'jotakp',
+          categories: [cat.categoryId],
+          lastSyncedAt: new Date()
+        });
+        
+        results.products++;
+        
+        // Delay between products
+        await new Promise(r => setTimeout(r, 500));
+      }
+      
+      results.categories++;
+      console.log(`[Bulk] ${cat.categoryId}: ${products.length} products`);
+    }
+    
+    res.json({
+      success: true,
+      ...results,
+      message: `Procesadas ${results.categories} categorías, ${results.products} productos`
+    });
+  } catch (error) {
+    console.error('[Bulk] Error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  } finally {
+    await browser.close();
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`[Server] Scraping server on port ${PORT}`);
   connectDB().catch(console.error);
