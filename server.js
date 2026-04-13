@@ -833,6 +833,91 @@ const supplier = qSupplier ? String(qSupplier) : 'jotakp';
   });
 });
 
+// Endpoint: scrapear una sola categoría (para testing)
+app.post('/scrape-category', async (req, res) => {
+  if (!db) await connectDB();
+  
+  const { categoryId, idsubrubro1 } = req.body;
+  
+  if (!categoryId || !idsubrubro1) {
+    return res.status(400).json({ error: 'categoryId and idsubrubro1 required' });
+  }
+  
+  console.log(`[Test] Scraping single category: ${categoryId}`);
+  
+  const chromiumPath = process.env.CHROMIUM_PATH || '/usr/bin/chromium';
+  
+  const browser = await chromium.launch({
+    headless: true,
+    executablePath: chromiumPath,
+    args: ['--no-sandbox', '--disable-setuid-sandbox']
+  });
+  
+  try {
+    // Login
+    const context = await browser.newContext();
+    const loginPage = await context.newPage();
+    
+    await loginPage.goto(SCRAPER_CONFIG.loginUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await loginPage.waitForTimeout(3000);
+    
+    const allInputs = await loginPage.locator('input:not([type="hidden"]):visible').all();
+    if (allInputs.length >= 2) {
+      await allInputs[0].fill(SCRAPER_CONFIG.email);
+      await allInputs[1].fill(SCRAPER_CONFIG.password);
+      const submitBtn = await loginPage.locator('input[type="submit"], button').first();
+      await submitBtn.click();
+    }
+    
+    await loginPage.waitForLoadState('networkidle');
+    await loginPage.waitForTimeout(2000);
+    await loginPage.close();
+    
+    // Scrape single category
+    console.log(`[Test] Scraping products for: ${categoryId}`);
+    const products = await scrapeCategoryProducts(categoryId, idsubrubro1, SCRAPER_CONFIG.baseUrl, browser, context);
+    
+    console.log(`[Test] Found ${products.length} products`);
+    
+    // Upload images to Cloudinary for each product
+    let uploaded = 0;
+    for (const product of products) {
+      if (product.imageUrls && product.imageUrls.length > 0) {
+        const cloudUrls = await uploadImagesToCloudinary(product.imageUrls, 'jotakp', product.externalId);
+        product.imageUrls = cloudUrls;
+        uploaded++;
+      }
+      
+      // Save to DB
+      await productRepository.upsert({
+        ...product,
+        externalId: product.externalId,
+        supplier: 'jotakp',
+        categories: [categoryId],
+        lastSyncedAt: new Date()
+      });
+    }
+    
+    res.json({ 
+      success: true, 
+      category: categoryId,
+      productsFound: products.length,
+      imagesUploaded: uploaded,
+      sampleProducts: products.slice(0, 3).map(p => ({
+        name: p.name?.substring(0, 40),
+        externalId: p.externalId,
+        imageUrls: p.imageUrls
+      }))
+    });
+    
+  } catch (error) {
+    console.error('[Test] Error:', error);
+    res.status(500).json({ error: error.message });
+  } finally {
+    await browser.close();
+  }
+});
+
 // Endpoint: último scrapeo
 app.get('/last-run', async (req, res) => {
   if (!db) await connectDB();
