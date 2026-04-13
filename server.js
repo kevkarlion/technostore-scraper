@@ -378,40 +378,43 @@ async function scrapeProductDetail(page, productUrl) {
     if (skuEl) product.sku = await skuEl.textContent() || '';
   } catch {}
   
-// Images - get from detail page structure
+// Images - get from detail page using Playwright selectors (same as local scraper)
   try {
-    const pageContent = await page.content();
+    // Method 1: Get ALL images from thumbnails (data-src attribute)
+    // Estructura: <div class="tg-img-overlay artImg" data-src="imagenes/000015886.JPG">
+    const thumbnailDivs = await page.locator("div.tg-img-overlay.artImg").all();
+    const thumbnailUrls = [];
     
-    // Method 1: Buscar TODOS los patrones de imagen en el HTML
-    // Pattern más flexible: imagenes/ seguido de números
-    const allImgMatches = pageContent.match(/imagenes\/[0-9]+\.[a-zA-Z]{3,4}/gi);
-    
-    if (allImgMatches && allImgMatches.length > 0) {
-      const uniqueImages = [...new Set(allImgMatches)];
-      
-      for (const imgPath of uniqueImages.slice(0, 5)) {
-        // Skip miniaturas - only keep main images (not in /min/)
-        if (!imgPath.includes('/min/')) {
-          const fullUrl = `${SCRAPER_CONFIG.baseUrl}/${imgPath}`;
-          if (!product.imageUrls.includes(fullUrl)) {
-            product.imageUrls.push(fullUrl);
-          }
-        }
+    for (const div of thumbnailDivs) {
+      const dataSrc = await div.getAttribute("data-src");
+      if (dataSrc && dataSrc.includes("imagenes/") && !dataSrc.includes("/min/")) {
+        const fullUrl = dataSrc.startsWith("http") 
+          ? dataSrc 
+          : `${SCRAPER_CONFIG.baseUrl}/${dataSrc}`;
+        thumbnailUrls.push(fullUrl);
       }
     }
     
-    // Method 2: Buscar en src de imágenes img
-    if (product.imageUrls.length === 0) {
-      const imgs = await page.locator('img[src*="imagenes"]').all();
-      for (const img of imgs.slice(0, 5)) {
-        const src = await img.getAttribute('src');
-        if (src && src.includes('imagenes')) {
-          const fullUrl = src.startsWith('http') ? src : `${SCRAPER_CONFIG.baseUrl}/${src.replace(/^\//, '')}`;
-          if (!product.imageUrls.includes(fullUrl)) {
-            product.imageUrls.push(fullUrl);
+    // Method 2: Also get the main image (img.img-fluid)
+    if (thumbnailUrls.length === 0) {
+      try {
+        const mainImg = page.locator("img.img-fluid").first();
+        if (await mainImg.count() > 0) {
+          const src = await mainImg.getAttribute("src");
+          if (src && src.includes("imagenes/") && !src.includes("/min/")) {
+            const fullUrl = src.startsWith("http") 
+              ? src 
+              : `${SCRAPER_CONFIG.baseUrl}/${src}`;
+            thumbnailUrls.push(fullUrl);
           }
         }
+      } catch {
+        // Ignore if no main image
       }
+    }
+    
+    if (thumbnailUrls.length > 0) {
+      product.imageUrls = thumbnailUrls;
     }
   } catch (e) {
     console.log(`[Detail] Image error: ${e.message}`);
