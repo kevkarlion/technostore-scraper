@@ -382,4 +382,20 @@ app.post('/debug/fix-discontinued', async (req, res) => {
   }
 });
 
+// Debug endpoint to check products
+app.post('/debug/check-products', async (req, res) => {
+  try {
+    const { category } = req.body;
+    const db = await getDb();
+    const products = await db.collection('products')
+      .find({ categories: category, status: 'active' })
+      .project({ name: 1, imageUrls: 1 })
+      .limit(5)
+      .toArray();
+    res.json({ success: true, products });
+  } catch (error) {
+    res.status(500).json({ success: false, error: String(error) });
+  }
+});
+
 app.listen(PORT, () => { console.log('[Server] Scraper server on port', PORT); });

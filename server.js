@@ -759,4 +759,32 @@ app.post('/debug/fix-discontinued', function (req, res) { return __awaiter(void 
         }
     });
 }); });
+// Debug endpoint to check products
+app.post('/debug/check-products', function (req, res) { return __awaiter(void 0, void 0, void 0, function () {
+    var category, db_2, products, error_6;
+    return __generator(this, function (_a) {
+        switch (_a.label) {
+            case 0:
+                _a.trys.push([0, 3, , 4]);
+                category = req.body.category;
+                return [4 /*yield*/, getDb()];
+            case 1:
+                db_2 = _a.sent();
+                return [4 /*yield*/, db_2.collection('products')
+                        .find({ categories: category, status: 'active' })
+                        .project({ name: 1, imageUrls: 1 })
+                        .limit(5)
+                        .toArray()];
+            case 2:
+                products = _a.sent();
+                res.json({ success: true, products: products });
+                return [3 /*break*/, 4];
+            case 3:
+                error_6 = _a.sent();
+                res.status(500).json({ success: false, error: String(error_6) });
+                return [3 /*break*/, 4];
+            case 4: return [2 /*return*/];
+        }
+    });
+}); });
 app.listen(PORT, function () { console.log('[Server] Scraper server on port', PORT); });
