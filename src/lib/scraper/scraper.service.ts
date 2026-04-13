@@ -115,7 +115,25 @@ const productRepository = {
 const scraperRunRepository = {
   async create(run: any) {
     const db = await getDb();
-    return await db.collection('scraper_runs').insertOne({ ...run, createdAt: new Date() });
+    // Generate a unique runId if not provided
+    const runId = run.runId || crypto.randomUUID();
+    const now = new Date();
+    const result = await db.collection('scraper_runs').insertOne({ 
+      ...run, 
+      runId,
+      status: run.status || 'in_progress',
+      currentCategoryIndex: run.currentCategoryIndex || 0,
+      lastPageNumber: run.lastPageNumber || 1,
+      lastProductId: run.lastProductId || null,
+      lastProductOffset: run.lastProductOffset || 0,
+      productsScraped: run.productsScraped || 0,
+      productsSaved: run.productsSaved || 0,
+      resumeCount: run.resumeCount || 0,
+      startedAt: run.startedAt || now,
+      updatedAt: now,
+      createdAt: now
+    });
+    return { ...run, runId, _id: result.insertedId };
   },
   async update(runId: string, updates: any) {
     const db = await getDb();

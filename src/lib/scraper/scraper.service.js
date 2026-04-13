@@ -92,6 +92,7 @@ var image_downloader_1 = require("./image-downloader");
 var types_1 = require("./types");
 var path_1 = __importDefault(require("path"));
 var os_1 = __importDefault(require("os"));
+var crypto_1 = __importDefault(require("crypto"));
 var mongodb_1 = require("mongodb");
 // Get DB - try global first, then direct connection
 var dbInstance = null;
@@ -242,14 +243,18 @@ var productRepository = {
 var scraperRunRepository = {
     create: function (run) {
         return __awaiter(this, void 0, void 0, function () {
-            var db;
+            var db, runId, now, result;
             return __generator(this, function (_a) {
                 switch (_a.label) {
                     case 0: return [4 /*yield*/, getDb()];
                     case 1:
                         db = _a.sent();
-                        return [4 /*yield*/, db.collection('scraper_runs').insertOne(__assign(__assign({}, run), { createdAt: new Date() }))];
-                    case 2: return [2 /*return*/, _a.sent()];
+                        runId = run.runId || crypto_1.default.randomUUID();
+                        now = new Date();
+                        return [4 /*yield*/, db.collection('scraper_runs').insertOne(__assign(__assign({}, run), { runId: runId, status: run.status || 'in_progress', currentCategoryIndex: run.currentCategoryIndex || 0, lastPageNumber: run.lastPageNumber || 1, lastProductId: run.lastProductId || null, lastProductOffset: run.lastProductOffset || 0, productsScraped: run.productsScraped || 0, productsSaved: run.productsSaved || 0, resumeCount: run.resumeCount || 0, startedAt: run.startedAt || now, updatedAt: now, createdAt: now }))];
+                    case 2:
+                        result = _a.sent();
+                        return [2 /*return*/, __assign(__assign({}, run), { runId: runId, _id: result.insertedId })];
                 }
             });
         });
