@@ -21,7 +21,7 @@ console.log("[Scraper] Initialized PLAYWRIGHT_BROWSERS_PATH:", BROWSERS_PATH);
  * 4. Update state in DB
  */
 
-const MAX_PARALLEL_PAGES = 2;
+const MAX_PARALLEL_PAGES = 2; // Reducido para evitar sobrecarga
 
 // Find chromium executable
 async function getChromiumExecutable(): Promise<string | undefined> {
@@ -117,8 +117,11 @@ async function getCategoryPreview(page: any, idsubrubro1: number, baseUrl: strin
 } | null> {
   try {
     const url = `${baseUrl}/buscar.aspx?idsubrubro1=${idsubrubro1}&pag=1`;
-    await page.goto(url, { waitUntil: "networkidle", timeout: 60000 });
-
+    // Use domcontentloaded + wait for content instead of networkidle
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
+    
+    // Wait for dynamic content to load
+    await page.waitForTimeout(2000);
     await page.waitForSelector("div:has-text('U$D')", { timeout: 10000 }).catch(() => {});
 
     const content = await page.content();
@@ -204,27 +207,42 @@ export async function preCheckCategories(categories: { id: string; idsubrubro1: 
 
   const browser = await chromium.launch({
     headless: true,
-    args: ["--no-sandbox", "--disable-setuid-sandbox"],
+    args: [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-dev-shm-usage", // Agregado para Railway
+      "--disable-gpu",
+      "--disable-software-rasterizer",
+    ],
     ...(chromiumPath ? { executablePath: chromiumPath } : {}),
   });
 
   try {
     console.log("[Incremental] Login for pre-check...");
-    const context = await browser.newContext();
+    const context = await browser.newContext({
+      viewport: { width: 1024, height: 768 },
+    });
     const loginPage = await context.newPage();
 
-    await loginPage.goto(config.loginUrl, { waitUntil: "networkidle" });
+    // Use domcontentloaded instead of networkidle - more stable in Railway
+    await loginPage.goto(config.loginUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
+    
+    // Wait a bit for page to settle
+    await loginPage.waitForTimeout(3000);
+    
     await loginPage.fill(config.selectors.login.emailInputSelector, config.email);
     await loginPage.fill(config.selectors.login.passwordInputSelector, config.password);
     await loginPage.click(config.selectors.login.submitButtonSelector);
-    await loginPage.waitForLoadState("networkidle");
+    
+    // Wait for navigation after login
+    await loginPage.waitForTimeout(3000);
 
     await loginPage.waitForTimeout(2000);
     try {
       const branchSelect = loginPage.locator("#ContentPlaceHolder1_ddlSucursal, #ddlSucursal").first();
       if (await branchSelect.count() > 0) {
         await branchSelect.selectOption({ index: 1 });
-        await loginPage.waitForLoadState("networkidle");
+        await loginPage.waitForTimeout(2000);
       }
     } catch {
       /* ignore */
@@ -234,17 +252,23 @@ export async function preCheckCategories(categories: { id: string; idsubrubro1: 
 
     console.log("[Incremental] Pre-checking categories in parallel...");
 
-    // Process in batches
+    // Process in batches with better error handling
     for (let i = 0; i < categories.length; i += MAX_PARALLEL_PAGES) {
       const batch = categories.slice(i, i + MAX_PARALLEL_PAGES);
       console.log(`[Incremental] Pre-check batch ${Math.floor(i / MAX_PARALLEL_PAGES) + 1}: ${batch.map((c) => c.name).join(", ")}`);
 
       const batchPromises = batch.map(async (cat) => {
-        const page = await context.newPage();
+        let page = null;
         try {
+          page = await context.newPage();
+          // Set memory limits on page
+          await page.setViewportSize({ width: 1280, height: 720 });
+          
           const preview = await getCategoryPreview(page, cat.idsubrubro1, config.baseUrl);
-          await page.close();
-
+          
+          // Close page immediately after use
+          try { await page.close(); } catch { /* ignore */ }
+          
           if (!preview) {
             return { categoryId: cat.id, status: "error" };
           }
@@ -277,7 +301,8 @@ export async function preCheckCategories(categories: { id: string; idsubrubro1: 
             count: preview.productCount,
           };
         } catch (error) {
-          await page.close();
+          // Close page on error
+          try { if (page) await page.close(); } catch { /* ignore */ }
           return { categoryId: cat.id, status: "error" };
         }
       });
