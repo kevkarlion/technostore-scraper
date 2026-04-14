@@ -694,44 +694,78 @@ app.get('/scraper/categories', function (req, res) {
     res.json({ categories: categories });
 });
 app.post('/scraper/run', function (req, res) { return __awaiter(void 0, void 0, void 0, function () {
-    var _a, categoryId, idsubrubro1, source, result, error_3;
+    var lastError, attempt, _a, categoryId, idsubrubro1, source, result, error_3;
     return __generator(this, function (_b) {
         switch (_b.label) {
             case 0:
-                _b.trys.push([0, 2, , 3]);
+                lastError = null;
+                attempt = 1;
+                _b.label = 1;
+            case 1:
+                if (!(attempt <= 3)) return [3 /*break*/, 8];
+                _b.label = 2;
+            case 2:
+                _b.trys.push([2, 4, , 7]);
+                console.log("[Scraper] Attempt ".concat(attempt, "/3..."));
                 _a = req.body, categoryId = _a.categoryId, idsubrubro1 = _a.idsubrubro1, source = _a.source;
                 return [4 /*yield*/, (0, index_1.runScraper)({ categoryId: categoryId, idsubrubro1: idsubrubro1, source: source })];
-            case 1:
+            case 3:
                 result = _b.sent();
-                res.json(result);
-                return [3 /*break*/, 3];
-            case 2:
+                return [2 /*return*/, res.json(result)];
+            case 4:
                 error_3 = _b.sent();
-                console.error('[Scraper] Error:', error_3);
-                res.status(500).json({ success: false, error: String(error_3) });
-                return [3 /*break*/, 3];
-            case 3: return [2 /*return*/];
+                console.error("[Scraper] Attempt ".concat(attempt, " failed:"), error_3.message);
+                lastError = error_3;
+                if (!(attempt < 3)) return [3 /*break*/, 6];
+                return [4 /*yield*/, new Promise(function (r) { return setTimeout(r, 5000); })];
+            case 5:
+                _b.sent();
+                _b.label = 6;
+            case 6: return [3 /*break*/, 7];
+            case 7:
+                attempt++;
+                return [3 /*break*/, 1];
+            case 8:
+                res.status(500).json({ success: false, error: String(lastError) });
+                return [2 /*return*/];
         }
     });
 }); });
 app.post('/scraper/incremental', function (req, res) { return __awaiter(void 0, void 0, void 0, function () {
-    var forceFullScrape, result, error_4;
+    var lastError, attempt, forceFullScrape, result, error_4;
     return __generator(this, function (_a) {
         switch (_a.label) {
             case 0:
-                _a.trys.push([0, 2, , 3]);
+                lastError = null;
+                attempt = 1;
+                _a.label = 1;
+            case 1:
+                if (!(attempt <= 3)) return [3 /*break*/, 8];
+                _a.label = 2;
+            case 2:
+                _a.trys.push([2, 4, , 7]);
+                console.log("[Incremental] Attempt ".concat(attempt, "/3..."));
                 forceFullScrape = req.body.forceFullScrape;
                 return [4 /*yield*/, (0, index_1.runIncrementalScraper)(forceFullScrape)];
-            case 1:
+            case 3:
                 result = _a.sent();
-                res.json(result);
-                return [3 /*break*/, 3];
-            case 2:
+                return [2 /*return*/, res.json(result)];
+            case 4:
                 error_4 = _a.sent();
-                console.error('[Incremental] Error:', error_4);
-                res.status(500).json({ success: false, error: String(error_4) });
-                return [3 /*break*/, 3];
-            case 3: return [2 /*return*/];
+                console.error("[Incremental] Attempt ".concat(attempt, " failed:"), error_4.message);
+                lastError = error_4;
+                if (!(attempt < 3)) return [3 /*break*/, 6];
+                return [4 /*yield*/, new Promise(function (r) { return setTimeout(r, 5000); })];
+            case 5:
+                _a.sent();
+                _a.label = 6;
+            case 6: return [3 /*break*/, 7];
+            case 7:
+                attempt++;
+                return [3 /*break*/, 1];
+            case 8:
+                res.status(500).json({ success: false, error: String(lastError) });
+                return [2 /*return*/];
         }
     });
 }); });

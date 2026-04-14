@@ -345,26 +345,45 @@ app.get('/scraper/categories', (req, res) => {
 
 app.post('/scraper/run', async (req, res) => {
   // Run full scraper for specific category or all
-  try {
-    const { categoryId, idsubrubro1, source } = req.body;
-    const result = await runScraper({ categoryId, idsubrubro1, source });
-    res.json(result);
-  } catch (error) {
-    console.error('[Scraper] Error:', error);
-    res.status(500).json({ success: false, error: String(error) });
+  // Add retry logic for cold starts
+  let lastError = null;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      console.log(`[Scraper] Attempt ${attempt}/3...`);
+      const { categoryId, idsubrubro1, source } = req.body;
+      const result = await runScraper({ categoryId, idsubrubro1, source });
+      return res.json(result);
+    } catch (error) {
+      console.error(`[Scraper] Attempt ${attempt} failed:`, error.message);
+      lastError = error;
+      if (attempt < 3) {
+        await new Promise(r => setTimeout(r, 5000));
+      }
+    }
   }
+  res.status(500).json({ success: false, error: String(lastError) });
 });
 
 app.post('/scraper/incremental', async (req, res) => {
   // Run incremental scraper with pre-check (using new module)
-  try {
-    const { forceFullScrape } = req.body;
-    const result = await runIncrementalScraperNew(forceFullScrape);
-    res.json(result);
-  } catch (error) {
-    console.error('[Incremental] Error:', error);
-    res.status(500).json({ success: false, error: String(error) });
+  // Add retry logic for cold starts
+  let lastError = null;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      console.log(`[Incremental] Attempt ${attempt}/3...`);
+      const { forceFullScrape } = req.body;
+      const result = await runIncrementalScraperNew(forceFullScrape);
+      return res.json(result);
+    } catch (error) {
+      console.error(`[Incremental] Attempt ${attempt} failed:`, error.message);
+      lastError = error;
+      // Wait 5 seconds before retry
+      if (attempt < 3) {
+        await new Promise(r => setTimeout(r, 5000));
+      }
+    }
   }
+  res.status(500).json({ success: false, error: String(lastError) });
 });
 
 // Debug endpoint to fix discontinued products
