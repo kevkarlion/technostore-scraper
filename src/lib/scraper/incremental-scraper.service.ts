@@ -117,7 +117,7 @@ async function getCategoryPreview(page: any, idsubrubro1: number, baseUrl: strin
 } | null> {
   try {
     const url = `${baseUrl}/buscar.aspx?idsubrubro1=${idsubrubro1}&pag=1`;
-    await page.goto(url, { waitUntil: "networkidle", timeout: 30000 });
+    await page.goto(url, { waitUntil: "networkidle", timeout: 60000 });
 
     await page.waitForSelector("div:has-text('U$D')", { timeout: 10000 }).catch(() => {});
 

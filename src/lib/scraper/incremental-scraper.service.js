@@ -194,7 +194,7 @@ function getCategoryPreview(page, idsubrubro1, baseUrl) {
                 case 0:
                     _b.trys.push([0, 12, , 13]);
                     url = "".concat(baseUrl, "/buscar.aspx?idsubrubro1=").concat(idsubrubro1, "&pag=1");
-                    return [4 /*yield*/, page.goto(url, { waitUntil: "networkidle", timeout: 30000 })];
+                    return [4 /*yield*/, page.goto(url, { waitUntil: "networkidle", timeout: 60000 })];
                 case 1:
                     _b.sent();
                     return [4 /*yield*/, page.waitForSelector("div:has-text('U$D')", { timeout: 10000 }).catch(function () { })];

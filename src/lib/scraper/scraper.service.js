@@ -481,7 +481,7 @@ function getChromiumExecutable() {
  */
 var MAX_RETRIES = 3;
 var RETRY_DELAY_MS = 3000;
-var PAGE_NAVIGATION_TIMEOUT = 45000; // 45 segundos para páginas complejas
+var PAGE_NAVIGATION_TIMEOUT = 60000; // 60 segundos para páginas complejas
 /**
  * Maximum number of parallel pages for detail scraping
  */

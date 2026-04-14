@@ -277,7 +277,7 @@ async function getChromiumExecutable(): Promise<string | undefined> {
  */
 const MAX_RETRIES = 3;
 const RETRY_DELAY_MS = 3000;
-const PAGE_NAVIGATION_TIMEOUT = 45000; // 45 segundos para páginas complejas
+const PAGE_NAVIGATION_TIMEOUT = 60000; // 60 segundos para páginas complejas
 
 /**
  * Maximum number of parallel pages for detail scraping
