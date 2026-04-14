@@ -3,6 +3,39 @@ import express from 'express';
 import { chromium } from 'playwright';
 import { MongoClient } from 'mongodb';
 import crypto from 'crypto';
+import cron from 'node-cron';
+
+// ===============================================
+// TIMEZONE HELPERS - Argentina (UTC-3)
+// ===============================================
+const TIMEZONE = 'America/Argentina/Buenos_Aires';
+
+function toArgentinaTime(date: Date | string): string {
+  const d = typeof date === 'string' ? new Date(date) : date;
+  return d.toLocaleString('es-AR', { 
+    timeZone: TIMEZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false
+  });
+}
+
+function formatArgentinaDate(date: Date | string): string {
+  const d = typeof date === 'string' ? new Date(date) : date;
+  return d.toLocaleString('es-AR', { 
+    timeZone: TIMEZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false
+  });
+}
 
 // Import new scraper modules (use alias to avoid conflict)
 import { runScraper, runIncrementalScraper as runIncrementalScraperNew, jotakpCategories } from './src/lib/scraper/index';
@@ -359,7 +392,15 @@ app.get('/status', async (req, res) => {
     const database = await getDb();
     const totalProducts = await database.collection('products').countDocuments({ supplier: 'jotakp', status: 'active' });
     const lastScrapes = await database.collection('scraper_state').find().sort({ capturedAt: -1 }).limit(10).toArray();
-    res.json({ status: 'ok', products: totalProducts, lastScrapes: lastScrapes.map((s: any) => ({ category: s.categoryId, date: s.capturedAt })) });
+    res.json({ 
+      status: 'ok', 
+      products: totalProducts, 
+      timezone: TIMEZONE,
+      lastScrapes: lastScrapes.map((s: any) => ({ 
+        category: s.categoryId, 
+        date: formatArgentinaDate(s.capturedAt)
+      }))
+    });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -446,4 +487,41 @@ app.post('/debug/check-products', async (req, res) => {
   }
 });
 
-app.listen(PORT, () => { console.log('[Server] Scraper server on port', PORT); });
+app.listen(PORT, () => { 
+  console.log('[Server] Scraper server on port', PORT);
+  
+  // ===============================================
+  // SCHEDULER - Argentina timezone (UTC-3)
+  // ===============================================
+  const SCRAPER_SCHEDULE = process.env.SCRAPER_SCHEDULE || '0 6 * * *'; // Default: 6am Argentina
+  const TIMEZONE = 'America/Argentina/Buenos_Aires';
+  
+  console.log(`[Cron] Schedule: ${SCRAPER_SCHEDULE} (${TIMEZONE})`);
+  
+  // Verificar que el schedule sea válido
+  if (!cron.validate(SCRAPER_SCHEDULE)) {
+    console.error('[Cron] Invalid schedule:', SCRAPER_SCHEDULE);
+  } else {
+    cron.schedule(SCRAPER_SCHEDULE, async () => {
+      console.log('[Cron] Running scheduled incremental scrape...');
+      const startTime = Date.now();
+      try {
+        const result = await runIncrementalScraperNew(false);
+        const duration = Math.round((Date.now() - startTime) / 1000);
+        console.log(`[Cron] Completed in ${duration}s - Created: ${result.scrapeResult?.created}, Updated: ${result.scrapeResult?.updated}`);
+      } catch (error) {
+        console.error('[Cron] Error:', error);
+      }
+    }, { timezone: TIMEZONE });
+    console.log('[Cron] Scheduler active');
+  }
+});
+
+// Endpoints para controlar el scheduler
+app.get('/scheduler/status', (req, res) => {
+  res.json({ 
+    schedule: process.env.SCRAPER_SCHEDULE || '0 6 * * *',
+    timezone: 'America/Argentina/Buenos_Aires',
+    enabled: true 
+  });
+});
