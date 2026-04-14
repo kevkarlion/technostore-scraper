@@ -22,7 +22,7 @@ async function getDb(): Promise<any> {
   // Fallback to direct connection
   if (!dbInstance) {
     const MONGO_URI = process.env.MONGO_URI;
-    const DB_NAME = process.env.DB_NAME || "technostore";
+    const DB_NAME = process.env.DB_NAME || "ecommerce";
     
     if (!MONGO_URI) {
       throw new Error("MONGO_URI is required");
@@ -1282,20 +1282,30 @@ export class ScraperService {
       for (let i = 0; i < products.length; i++) {
         const product = products[i];
         if (product.imageUrls && product.imageUrls.length > 0) {
+          // Keep original imageUrls as fallback
+          const originalImageUrls = [...product.imageUrls];
+          
           try {
-            // Upload to Cloudinary (or fallback to original URL)
+            // Upload to Cloudinary
             const cloudUrls = await uploadProductImages(
               product.imageUrls,
               product.supplier,
               product.externalId
             );
-            // Use Cloudinary URLs if uploaded, otherwise keep original URLs
+            
+            // Save Cloudinary URLs in cloudinaryUrls field
             if (cloudUrls.length > 0) {
-              product.imageUrls = cloudUrls;
+              product.cloudinaryUrls = cloudUrls;
+              console.log(`[Scraper] Uploaded ${cloudUrls.length} images for ${product.name.substring(0, 30)}... (cloudinary)`);
             }
-            console.log(`[Scraper] Uploaded ${cloudUrls.length} images for ${product.name.substring(0, 30)}...`);
+            
+            // Keep original URLs as fallback in imageUrls
+            product.imageUrls = originalImageUrls;
+            
           } catch (imageError) {
             console.error(`[Scraper] Error uploading images for ${product.externalId}:`, imageError);
+            // Keep original URLs if upload failed
+            product.imageUrls = originalImageUrls;
           }
         }
         // Small delay between products to not saturate the server

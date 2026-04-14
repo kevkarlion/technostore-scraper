@@ -64,7 +64,7 @@ const MAX_PARALLEL = 2;
 const MAX_PAGES = 3;
 
 const MONGO_URI = process.env.MONGO_URI;
-const DB_NAME = process.env.DB_NAME || 'technostore';
+const DB_NAME = process.env.DB_NAME || 'ecommerce';
 let db: any;
 
 async function getDb() {

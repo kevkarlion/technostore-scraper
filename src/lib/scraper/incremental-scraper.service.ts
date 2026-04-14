@@ -166,7 +166,7 @@ async function getCategoryPreview(page: any, idsubrubro1: number, baseUrl: strin
 async function getDb() {
   const { MongoClient } = await import("mongodb");
   const MONGO_URI = process.env.MONGO_URI;
-  const DB_NAME = process.env.DB_NAME || "technostore";
+  const DB_NAME = process.env.DB_NAME || "ecommerce";
 
   if (!MONGO_URI) {
     throw new Error("MONGO_URI is required");

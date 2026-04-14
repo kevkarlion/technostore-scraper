@@ -59,8 +59,10 @@ export async function uploadProductImage(
         const uploadUrl = `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/image/upload`;
         const formData = new URLSearchParams();
         formData.append("file", fullUrl);
-        formData.append("folder", `scraper/${supplier}`);
-        formData.append("public_id", `${productId}_${imageIndex}`);
+        // Use consistent folder and public_id format that matches the app's expectations
+        formData.append("folder", `technostore/${supplier}`);
+        // Format: jotakp_14438_0 (same as the app expects)
+        formData.append("public_id", `${supplier}_${productId}_${imageIndex}`);
         formData.append("timestamp", timestamp.toString());
         formData.append("api_key", CLOUDINARY_API_KEY);
         if (signature) formData.append("signature", signature);

@@ -19,8 +19,10 @@ export interface RawProduct {
   stockRaw?: string;
   /** Stock quantity as number (from detail page) */
   stock?: number;
-  /** Image URLs found on the product */
+  /** Image URLs found on the product (original from supplier) */
   imageUrls: string[];
+  /** Cloudinary URLs after upload */
+  cloudinaryUrls?: string[];
   /** Product categories/breadcrumbs */
   categories: string[];
   /** URL to the product detail page */
