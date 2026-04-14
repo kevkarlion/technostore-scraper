@@ -65,18 +65,47 @@ const MAX_PAGES = 3;
 
 const MONGO_URI = process.env.MONGO_URI;
 const DB_NAME = process.env.DB_NAME || 'ecommerce';
-let db: any;
+
+// SINGLETON: cliente y db reuse - CRÍTICO para M0
+let mongoClient: MongoClient | null = null;
+let db: any = null;
 
 async function getDb() {
+  if (!mongoClient) {
+    mongoClient = new MongoClient(MONGO_URI, {
+      maxPoolSize: 10,        // ⚡ Pool pequeño para M0 (default 100 es mucho)
+      minPoolSize: 2,        // Mantener 2 conexiones activas
+      maxIdleTimeMS: 30000,  // Cerrar inactivas después de 30s
+      waitQueueTimeoutMS: 5000,
+    });
+    await mongoClient.connect();
+    console.log('[Mongo] Connected with pool (max: 10)');
+  }
   if (!db) {
-    const client = new MongoClient(MONGO_URI);
-    await client.connect();
-    db = client.db(DB_NAME);
-    // Expose globally for scraper modules
+    db = mongoClient.db(DB_NAME);
     (global as any).db = db;
   }
   return db;
 }
+
+// Graceful shutdown - cerrar conexiones al cerrar app
+async function closeMongoConnection() {
+  if (mongoClient) {
+    await mongoClient.close();
+    console.log('[Mongo] Connection closed');
+    mongoClient = null;
+    db = null;
+  }
+}
+
+process.on('SIGINT', async () => {
+  await closeMongoConnection();
+  process.exit(0);
+});
+process.on('SIGTERM', async () => {
+  await closeMongoConnection();
+  process.exit(0);
+});
 
 function generateContentHash(content: string): string {
   return crypto.createHash('md5').update(content).digest('hex');
