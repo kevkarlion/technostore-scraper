@@ -1,6 +1,7 @@
 import { chromium } from "playwright";
 import { getScraperConfig, jotakpCategories } from "./config";
 import { runScraper } from "./scraper.service";
+import { MongoClient, Db } from "mongodb";
 import crypto from "crypto";
 import path from "path";
 import os from "os";
@@ -164,10 +165,12 @@ async function getCategoryPreview(page: any, idsubrubro1: number, baseUrl: strin
 }
 
 /**
- * Get DB connection
+ * Get DB connection - singleton pattern to avoid connection leaks
  */
-async function getDb() {
-  const { MongoClient } = await import("mongodb");
+let mongoClient: MongoClient | null = null;
+let dbInstance: Db | null = null;
+
+async function getDb(): Promise<Db> {
   const MONGO_URI = process.env.MONGO_URI;
   const DB_NAME = process.env.DB_NAME || "ecommerce";
 
@@ -175,9 +178,33 @@ async function getDb() {
     throw new Error("MONGO_URI is required");
   }
 
-  const client = new MongoClient(MONGO_URI);
-  await client.connect();
-  return client.db(DB_NAME);
+  // Reuse existing client instead of creating new one each time
+  if (!mongoClient) {
+    mongoClient = new MongoClient(MONGO_URI, {
+      maxPoolSize: 5,
+      maxIdleTimeMS: 30000,
+    });
+    await mongoClient.connect();
+    console.log("[Incremental] MongoDB connected (singleton)");
+  }
+
+  if (!dbInstance) {
+    dbInstance = mongoClient.db(DB_NAME);
+  }
+
+  return dbInstance;
+}
+
+/**
+ * Close DB connection - call on graceful shutdown
+ */
+export async function closeDb(): Promise<void> {
+  if (mongoClient) {
+    await mongoClient.close();
+    mongoClient = null;
+    dbInstance = null;
+    console.log("[Incremental] MongoDB connection closed");
+  }
 }
 
 /**
