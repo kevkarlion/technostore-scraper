@@ -161,16 +161,13 @@ async function getDb() {
     }
     // Reuse existing client instead of creating new one each time
     if (!mongoClient) {
-        console.log("[DB] Creating new MongoDB connection...");
         mongoClient = new mongodb_1.MongoClient(MONGO_URI, {
-            maxPoolSize: 5,
-            minPoolSize: 0,
-            maxIdleTimeMS: 10000,
-            waitQueueTimeoutMS: 5000,
-            serverSelectionTimeoutMS: 5000,
+            maxPoolSize: 10,
+            minPoolSize: 1, // Mantener 1 conexión viva
+            maxIdleTimeMS: 30000, // 30 segundos - no cerrar durante scrape
         });
         await mongoClient.connect();
-        console.log("[DB] MongoDB connected");
+        console.log("[Incremental] MongoDB connected (singleton)");
     }
     if (!dbInstance) {
         dbInstance = mongoClient.db(DB_NAME);
