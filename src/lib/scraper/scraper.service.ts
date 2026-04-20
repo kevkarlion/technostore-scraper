@@ -989,6 +989,11 @@ export class ScraperService {
         ".product-stock",
         ".stock-info",
         "span:has-text('Stock')",
+        // Stock desde listado (botón de cantidad dinámico)
+        "div[id^='artcant']",
+        ".tg-btn-secondary[style*='min-width: 80px']",
+        // Span "Cantidad:" seguido del número
+        "span:has-text('Cantidad:') + button + div",
       ];
 
       for (const selector of stockSelectors) {
