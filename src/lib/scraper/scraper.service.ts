@@ -1007,11 +1007,14 @@ export class ScraperService {
         ".product-stock",
         ".stock-info",
         "span:has-text('Stock')",
-        // Stock desde listado (botón de cantidad dinámico)
+        // Stock desde el div dinámico (funciona en listado Y detalle)
         "div[id^='artcant']",
+        "div[id*='artcant']",
         ".tg-btn-secondary[style*='min-width: 80px']",
         // Span "Cantidad:" seguido del número
         "span:has-text('Cantidad:') + button + div",
+        // Cualquier div que contenga número y esté cerca de botones +/-
+        "div:text-nowrap button + div",
       ];
 
       for (const selector of stockSelectors) {
@@ -1040,6 +1043,21 @@ export class ScraperService {
           }
         } catch {
           // Try next selector
+        }
+      }
+
+      // Si aún no tenemos stock, verificar si hay botones + y - (indica que hay stock disponible)
+      if (!detail.stock || detail.stock === undefined) {
+        try {
+          const masBtn = page.locator("button:has-text('+')").first();
+          const menosBtn = page.locator("button:has-text('-')").first();
+          if ((await masBtn.count()) > 0 && (await menosBtn.count()) > 0) {
+            // Hay botones +/-, el producto tiene stock (aunque no sepamos cuánto exacto)
+            // Asumimos stock = 1 como mínimo
+            detail.stock = 1;
+          }
+        } catch {
+          // No hay botones de cantidad, probablemente sin stock
         }
       }
 
