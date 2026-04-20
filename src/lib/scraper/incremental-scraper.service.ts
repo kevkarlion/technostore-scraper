@@ -173,6 +173,9 @@ let dbInstance: Db | null = null;
 async function getDb(): Promise<Db> {
   const MONGO_URI = process.env.MONGO_URI || process.env.MONGODB_URI;
   const DB_NAME = process.env.DB_NAME || process.env.MONGODB_DB_NAME || "ecommerce";
+  
+  console.log("[DBG] MONGO_URI =", MONGO_URI ? "SET" : "UNDEFINED");
+  console.log("[DBG] DB_NAME =", DB_NAME);
 
   if (!MONGO_URI) {
     throw new Error("MONGO_URI is required");
