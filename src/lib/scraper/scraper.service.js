@@ -947,14 +947,11 @@ class ScraperService {
                 ".product-stock",
                 ".stock-info",
                 "span:has-text('Stock')",
-                // Stock desde el div dinámico (funciona en listado Y detalle)
+                // Stock desde el div dinámico (funciona en listado Y detalle) - con ID exacto
                 "div[id^='artcant']",
                 "div[id*='artcant']",
-                ".tg-btn-secondary[style*='min-width: 80px']",
-                // Span "Cantidad:" seguido del número
-                "span:has-text('Cantidad:') + button + div",
-                // Cualquier div que contenga número y esté cerca de botones +/-
-                "div:text-nowrap button + div",
+                // El div con el stock (puede tener espacios)
+                "[id^='artcant']",
             ];
             for (const selector of stockSelectors) {
                 try {
@@ -962,19 +959,20 @@ class ScraperService {
                     if (await stock.count() > 0) {
                         const text = await stock.textContent();
                         if (text) {
+                            const trimmedText = text.trim();
                             // Check if it says "Sin stock" or "Sin Stock" = no stock
-                            if (text.toLowerCase().includes("sin stock")) {
+                            if (trimmedText.toLowerCase().includes("sin stock")) {
                                 detail.stock = 0;
                                 break;
                             }
                             // Check for "consultar" or similar = no stock
-                            if (text.toLowerCase().includes("consultar") || text.toLowerCase().includes("sin disponibilidad")) {
+                            if (trimmedText.toLowerCase().includes("consultar") || trimmedText.toLowerCase().includes("sin disponibilidad")) {
                                 detail.stock = 0;
                                 break;
                             }
-                            // Try to extract a number
-                            const stockMatch = text.match(/(\d+)/);
-                            if (stockMatch) {
+                            // Try to extract a number - usar regex que ignora espacios
+                            const stockMatch = trimmedText.match(/(\d+)/);
+                            if (stockMatch && parseInt(stockMatch[1], 10) > 0) {
                                 detail.stock = parseInt(stockMatch[1], 10);
                                 break;
                             }
@@ -990,8 +988,9 @@ class ScraperService {
             // Si hay botones + y -, el producto tiene stock disponible
             if (!detail.stock || detail.stock === 0) {
                 try {
-                    const masBtn = page.locator("button:has-text('+')");
-                    const menosBtn = page.locator("button:has-text('-')");
+                    // Buscar botones con onclick="modMas" y "modMenos"
+                    const masBtn = page.locator("button[onclick*='modMas']");
+                    const menosBtn = page.locator("button[onclick*='modMenos']");
                     if ((await masBtn.count()) > 0 && (await menosBtn.count()) > 0) {
                         // Hay botones +/-, MARCAMOS como que tiene stock (asumimos al menos 1)
                         detail.stock = 1;
