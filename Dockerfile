@@ -1,35 +1,23 @@
-# Usar imagen node estándar
+# Usar imagen con chromium instalado
 FROM node:18-bullseye
 
-# Instalar librerías necesarias para Playwright chromium
+# Instalar chromium del sistema
 RUN apt-get update && apt-get install -y \
-    libnss3 \
-    libnspr4 \
-    libatk1.0-0 \
-    libatk-bridge2.0-0 \
-    libcups2 \
-    libdrm2 \
-    libxkbcommon0 \
-    libxcomposite1 \
-    libxdamage1 \
-    libxfixes3 \
-    libxrandr2 \
-    libgbm1 \
-    libasound2 \
-    libpango-1.0-0 \
-    libcairo2 \
+    chromium \
+    chromium-driver \
     && rm -rf /var/lib/apt/lists/*
+
+# Configurar variables de entorno para Playwright
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE=/usr/bin/chromium
 
 WORKDIR /app
 
 # Copy package files
 COPY package*.json ./
 
-# Install dependencies
+# Install dependencies (postinstall installará playwright browsers también)
 RUN npm install
-
-# Install Playwright browsers during build (so they're cached)
-RUN mkdir -p /app/playwright-cache && npx playwright install chromium
 
 # Copy app files
 COPY . .

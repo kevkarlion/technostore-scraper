@@ -1,13 +1,12 @@
 import { chromium } from "playwright";
 import { getScraperConfig, jotakpCategories } from "./config";
 import { runScraper } from "./scraper.service";
-import { MongoClient, Db } from "mongodb";
 import crypto from "crypto";
 import path from "path";
 import os from "os";
 
 // Set browsers path
-const BROWSERS_PATH = process.env.PLAYWRIGHT_BROWSERS_PATH || "/app/playwright-cache";
+const BROWSERS_PATH = process.env.PLAYWRIGHT_BROWSERS_PATH || "/tmp/ms-playwright";
 process.env.PLAYWRIGHT_BROWSERS_PATH = BROWSERS_PATH;
 process.env.HOME = "/tmp";
 console.log("[Scraper] Initialized PLAYWRIGHT_BROWSERS_PATH:", BROWSERS_PATH);
@@ -165,52 +164,35 @@ async function getCategoryPreview(page: any, idsubrubro1: number, baseUrl: strin
 }
 
 /**
- * Get DB connection - singleton pattern to avoid connection leaks
+ * Get DB connection
  */
-let mongoClient: MongoClient | null = null;
-let dbInstance: Db | null = null;
+let mongoClient: any = null;
+let dbInstance: any = null;
 
-async function getDb(): Promise<Db> {
+async function getDb() {
   const MONGO_URI = process.env.MONGO_URI || process.env.MONGODB_URI;
-  const DB_NAME = process.env.DB_NAME || process.env.MONGODB_DB_NAME || "ecommerce";
+  const DB_NAME = process.env.DB_NAME || "ecommerce";
 
   if (!MONGO_URI) {
     throw new Error("MONGO_URI is required");
   }
 
-  // Reuse existing client instead of creating new one each time
   if (!mongoClient) {
+    const { MongoClient } = await import("mongodb");
     mongoClient = new MongoClient(MONGO_URI, {
       maxPoolSize: 10,
-      minPoolSize: 1,
       maxIdleTimeMS: 30000,
-      serverSelectionTimeoutMS: 10000,
-      // Opciones TLS para evitar errores de SSL
       tls: true,
       tlsAllowInvalidCertificates: true,
       tlsAllowInvalidHostnames: true,
     });
     await mongoClient.connect();
-    console.log("[Incremental] MongoDB connected (singleton)");
   }
 
   if (!dbInstance) {
     dbInstance = mongoClient.db(DB_NAME);
   }
-
   return dbInstance;
-}
-
-/**
- * Close DB connection - call on graceful shutdown
- */
-export async function closeDb(): Promise<void> {
-  if (mongoClient) {
-    await mongoClient.close();
-    mongoClient = null;
-    dbInstance = null;
-    console.log("[Incremental] MongoDB connection closed");
-  }
 }
 
 /**
@@ -335,7 +317,6 @@ export async function preCheckCategories(categories: { id: string; idsubrubro1: 
           };
         } catch (error) {
           // Close page on error
-          console.error(`[Pre-check] Error ${cat.id}:`, error.message);
           try { if (page) await page.close(); } catch { /* ignore */ }
           return { categoryId: cat.id, status: "error" };
         }
@@ -389,148 +370,28 @@ export async function runIncrementalScraper(forceFullScrape: boolean = false): P
 }> {
   console.log("[Incremental] Starting incremental scraper (parallel)...");
 
-  try {
-    // Get all subcategories
-    const categories = jotakpCategories
-      .filter((c) => c.idsubrubro1 > 0)
-      .map((c) => ({ id: c.id, idsubrubro1: c.idsubrubro1, name: c.name }));
+  // Get all subcategories
+  const categories = jotakpCategories
+    .filter((c) => c.idsubrubro1 > 0)
+    .map((c) => ({ id: c.id, idsubrubro1: c.idsubrubro1, name: c.name }));
 
-    let preCheckResult;
+  let preCheckResult;
 
-    if (forceFullScrape) {
-      console.log("[Incremental] Force full scrape - skipping pre-check");
-      preCheckResult = {
-        changed: categories.map((c) => c.id),
-        unchanged: [],
-        errors: [],
-      };
-    } else {
-      preCheckResult = await preCheckCategories(categories);
-    }
-
-    console.log(`[Incremental] Pre-check result: ${preCheckResult.changed.length} changed, ${preCheckResult.unchanged.length} unchanged`);
-
-    // If no changes, finish
-    if (preCheckResult.changed.length === 0) {
-      return {
-        success: true,
-        preCheck: {
-          total: categories.length,
-          changed: preCheckResult.changed,
-          unchanged: preCheckResult.unchanged,
-          errors: preCheckResult.errors,
-        },
-        timestamp: new Date(),
-      };
-    }
-
-    // ============================================================
-    // RESUME LOGIC: Get categories already processed
-    // ============================================================
-    const processedCategories = new Set<string>();
-    try {
-      const db = await getDb();
-      const allStates = await db.collection("scraper_state").find().toArray();
-      for (const state of allStates) {
-        if (state.lastScrapeAt) {
-          const lastScrape = new Date(state.lastScrapeAt);
-          const now = new Date();
-          const hoursDiff = (now.getTime() - lastScrape.getTime()) / (1000 * 60 * 60);
-          if (hoursDiff < 2) {
-            processedCategories.add(state.categoryId);
-          }
-        }
-      }
-      console.log(`[Incremental] Found ${processedCategories.size} recently processed categories, will skip them`);
-    } catch (e) {
-      console.log("[Incremental] Could not load previous state, starting fresh");
-    }
-
-    // Filter categories to process
-    const categoriesToScrape = preCheckResult.changed.filter((catId) => !processedCategories.has(catId));
-    console.log(`[Incremental] Scraping ${categoriesToScrape.length} categories (filtered from ${preCheckResult.changed.length})...`);
-
-    if (categoriesToScrape.length === 0) {
-      console.log("[Incremental] All categories already processed recently");
-      return {
-        success: true,
-        preCheck: {
-          total: categories.length,
-          changed: preCheckResult.changed,
-          unchanged: preCheckResult.unchanged,
-          errors: preCheckResult.errors,
-        },
-        timestamp: new Date(),
-      };
-    }
-
-    // Scrape changed categories in parallel
-    const scrapeResults = {
-      created: 0,
-      updated: 0,
-      errors: [] as string[],
-      durationMs: 0,
+  if (forceFullScrape) {
+    console.log("[Incremental] Force full scrape - skipping pre-check");
+    preCheckResult = {
+      changed: categories.map((c) => c.id),
+      unchanged: [],
+      errors: [],
     };
+  } else {
+    preCheckResult = await preCheckCategories(categories);
+  }
 
-    const startTime = Date.now();
+  console.log(`[Incremental] Pre-check result: ${preCheckResult.changed.length} changed, ${preCheckResult.unchanged.length} unchanged`);
 
-    for (let i = 0; i < categoriesToScrape.length; i += MAX_PARALLEL_PAGES) {
-      const batch = categoriesToScrape.slice(i, i + MAX_PARALLEL_PAGES);
-      console.log(`[Incremental] Scraping batch ${Math.floor(i / MAX_PARALLEL_PAGES) + 1}: ${batch.join(", ")}`);
-
-      const batchPromises = batch.map(async (categoryId) => {
-        try {
-          const result = await runScraper({
-            categoryId,
-            source: "incremental",
-          });
-
-          // Update state
-          const cat = jotakpCategories.find((c) => c.id === categoryId);
-          if (cat) {
-            const db = await getDb();
-            await db.collection("scraper_state").updateOne(
-              { categoryId: cat.id },
-              {
-                $set: {
-                  lastScrapeAt: new Date(),
-                },
-              }
-            );
-          }
-
-          return result;
-        } catch (error) {
-          console.error(`[Incremental] Error scraping ${categoryId}:`, error);
-          return {
-            created: 0,
-            updated: 0,
-            errors: [`Error scraping ${categoryId}`],
-            success: false,
-          };
-        }
-      });
-
-      const batchResults = await Promise.all(batchPromises);
-
-      for (const r of batchResults) {
-        scrapeResults.created += r.created;
-        scrapeResults.updated += r.updated;
-        scrapeResults.errors.push(...r.errors);
-      }
-    }
-
-    scrapeResults.durationMs = Date.now() - startTime;
-
-    // ============================================================
-    // MARK DISCONTINUED
-    // ============================================================
-    try {
-      console.log(`[Incremental] Scraping completed: ${scrapeResults.created} created, ${scrapeResults.updated} updated`);
-    } catch (e) {
-      console.log("[Incremental] Error marking discontinued:", e);
-    }
-
+  // If no changes, finish
+  if (preCheckResult.changed.length === 0) {
     return {
       success: true,
       preCheck: {
@@ -539,11 +400,126 @@ export async function runIncrementalScraper(forceFullScrape: boolean = false): P
         unchanged: preCheckResult.unchanged,
         errors: preCheckResult.errors,
       },
-      scrapeResult: scrapeResults,
       timestamp: new Date(),
     };
-  } catch (error) {
-    console.error("[Incremental] Error:", error);
-    throw error;
   }
+
+  // ============================================================
+  // RESUME LOGIC: Get categories already processed
+  // ============================================================
+  const processedCategories = new Set<string>();
+  try {
+    const db = await getDb();
+    const allStates = await db.collection("scraper_state").find().toArray();
+    for (const state of allStates) {
+      if (state.lastScrapeAt) {
+        const lastScrape = new Date(state.lastScrapeAt);
+        const now = new Date();
+        const hoursDiff = (now.getTime() - lastScrape.getTime()) / (1000 * 60 * 60);
+        if (hoursDiff < 2) {
+          processedCategories.add(state.categoryId);
+        }
+      }
+    }
+    console.log(`[Incremental] Found ${processedCategories.size} recently processed categories, will skip them`);
+  } catch (e) {
+    console.log("[Incremental] Could not load previous state, starting fresh");
+  }
+
+  // Filter categories to process
+  const categoriesToScrape = preCheckResult.changed.filter((catId) => !processedCategories.has(catId));
+  console.log(`[Incremental] Scraping ${categoriesToScrape.length} categories (filtered from ${preCheckResult.changed.length})...`);
+
+  if (categoriesToScrape.length === 0) {
+    console.log("[Incremental] All categories already processed recently");
+    return {
+      success: true,
+      preCheck: {
+        total: categories.length,
+        changed: preCheckResult.changed,
+        unchanged: preCheckResult.unchanged,
+        errors: preCheckResult.errors,
+      },
+      timestamp: new Date(),
+    };
+  }
+
+  // Scrape changed categories in parallel
+  const scrapeResults = {
+    created: 0,
+    updated: 0,
+    errors: [] as string[],
+    durationMs: 0,
+  };
+
+  const startTime = Date.now();
+
+  for (let i = 0; i < categoriesToScrape.length; i += MAX_PARALLEL_PAGES) {
+    const batch = categoriesToScrape.slice(i, i + MAX_PARALLEL_PAGES);
+    console.log(`[Incremental] Scraping batch ${Math.floor(i / MAX_PARALLEL_PAGES) + 1}: ${batch.join(", ")}`);
+
+    const batchPromises = batch.map(async (categoryId) => {
+      try {
+        const result = await runScraper({
+          categoryId,
+          source: "incremental",
+        });
+
+        // Update state
+        const cat = jotakpCategories.find((c) => c.id === categoryId);
+        if (cat) {
+          const db = await getDb();
+          await db.collection("scraper_state").updateOne(
+            { categoryId: cat.id },
+            {
+              $set: {
+                lastScrapeAt: new Date(),
+              },
+            }
+          );
+        }
+
+        return result;
+      } catch (error) {
+        console.error(`[Incremental] Error scraping ${categoryId}:`, error);
+        return {
+          created: 0,
+          updated: 0,
+          errors: [`Error scraping ${categoryId}`],
+          success: false,
+        };
+      }
+    });
+
+    const batchResults = await Promise.all(batchPromises);
+
+    for (const r of batchResults) {
+      scrapeResults.created += r.created;
+      scrapeResults.updated += r.updated;
+      scrapeResults.errors.push(...r.errors);
+    }
+  }
+
+  scrapeResults.durationMs = Date.now() - startTime;
+
+  // ============================================================
+  // MARK DISCONTINUED
+  // ============================================================
+  try {
+    console.log(`[Incremental] Scraping completed: ${scrapeResults.created} created, ${scrapeResults.updated} updated`);
+  } catch (e) {
+    console.log("[Incremental] Error marking discontinued:", e);
+  }
+
+  return {
+    success: true,
+    preCheck: {
+      total: categories.length,
+      changed: preCheckResult.changed,
+      unchanged: preCheckResult.unchanged,
+      errors: preCheckResult.errors,
+    },
+    scrapeResult: scrapeResults,
+    timestamp: new Date(),
+  };
 }
