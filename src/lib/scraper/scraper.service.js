@@ -771,21 +771,21 @@ class ScraperService {
                 catch {
                     // No image found in this product link
                 }
-                // Extract stock from listing (div with id "artcant{id}")
-                let stockFromListing = 0;
+                // Extract stock from listing - si no es "0", usar ese valor
+                let stockFromListing;
                 try {
                     const stockDiv = item.locator("div[id^='artcant']").first();
                     const stockCount = await stockDiv.count();
                     if (stockCount > 0) {
                         const stockText = await stockDiv.textContent();
                         const stockMatch = stockText?.match(/(\d+)/);
-                        if (stockMatch) {
+                        if (stockMatch && parseInt(stockMatch[1], 10) > 0) {
                             stockFromListing = parseInt(stockMatch[1], 10);
                         }
                     }
                 }
                 catch {
-                    // No stock found in listing, will try in detail page
+                    // No stock found
                 }
                 const rawProduct = {
                     externalId,
@@ -796,8 +796,8 @@ class ScraperService {
                     categories: [],
                     productUrl: href.startsWith("http") ? href : `${this.config.baseUrl}/${href}`,
                     rawElement: undefined,
-                    // Optional: si scraped desde listado, puede usar este stock o el de detalle
-                    ...(stockFromListing > 0 ? { stock: stockFromListing } : {}),
+                    // Optional: si scraped desde listado y hay stock > 0, usarlo
+                    ...(stockFromListing && stockFromListing > 0 ? { stock: stockFromListing } : {}),
                 };
                 products.push(rawProduct);
             }
@@ -985,19 +985,21 @@ class ScraperService {
                     // Try next selector
                 }
             }
-            // Si aún no tenemos stock, verificar si hay botones + y - (indica que hay stock disponible)
-            if (!detail.stock || detail.stock === undefined) {
+            // Si el valor es 0 (cantidad por defecto), asumimos que HAY stock porque hay botones +/-
+            // El valor 0 no significa "sin stock", significa "0 seleccionados"
+            // Si hay botones + y -, el producto tiene stock disponible
+            if (!detail.stock || detail.stock === 0) {
                 try {
-                    const masBtn = page.locator("button:has-text('+')").first();
-                    const menosBtn = page.locator("button:has-text('-')").first();
+                    const masBtn = page.locator("button:has-text('+')");
+                    const menosBtn = page.locator("button:has-text('-')");
                     if ((await masBtn.count()) > 0 && (await menosBtn.count()) > 0) {
-                        // Hay botones +/-, el producto tiene stock (aunque no sepamos cuánto exacto)
-                        // Asumimos stock = 1 como mínimo
+                        // Hay botones +/-, MARCAMOS como que tiene stock (asumimos al menos 1)
                         detail.stock = 1;
                     }
                 }
                 catch {
-                    // No hay botones de cantidad, probablemente sin stock
+                    // No hay botones = sin stock
+                    detail.stock = 0;
                 }
             }
             return detail;
