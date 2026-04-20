@@ -161,6 +161,7 @@ async function getDb() {
     }
     // Reuse existing client instead of creating new one each time
     if (!mongoClient) {
+        console.log("[Incremental] Creating new MongoDB connection...");
         mongoClient = new mongodb_1.MongoClient(MONGO_URI, {
             maxPoolSize: 5,
             minPoolSize: 0, // No mantener conexiones ociosas
@@ -170,6 +171,9 @@ async function getDb() {
         });
         await mongoClient.connect();
         console.log("[Incremental] MongoDB connected (singleton, pool: 5)");
+    }
+    else {
+        console.log("[Incremental] Reusing existing MongoDB connection");
     }
     if (!dbInstance) {
         dbInstance = mongoClient.db(DB_NAME);
@@ -287,6 +291,7 @@ async function preCheckCategories(categories) {
                 }
                 catch (error) {
                     // Close page on error
+                    console.error(`[Pre-check] Error ${cat.id}:`, error.message);
                     try {
                         if (page)
                             await page.close();

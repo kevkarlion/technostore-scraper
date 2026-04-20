@@ -180,6 +180,7 @@ async function getDb(): Promise<Db> {
 
   // Reuse existing client instead of creating new one each time
   if (!mongoClient) {
+    console.log("[Incremental] Creating new MongoDB connection...");
     mongoClient = new MongoClient(MONGO_URI, {
       maxPoolSize: 5,
       minPoolSize: 0,           // No mantener conexiones ociosas
@@ -189,6 +190,8 @@ async function getDb(): Promise<Db> {
     });
     await mongoClient.connect();
     console.log("[Incremental] MongoDB connected (singleton, pool: 5)");
+  } else {
+    console.log("[Incremental] Reusing existing MongoDB connection");
   }
 
   if (!dbInstance) {
@@ -332,6 +335,7 @@ export async function preCheckCategories(categories: { id: string; idsubrubro1: 
           };
         } catch (error) {
           // Close page on error
+          console.error(`[Pre-check] Error ${cat.id}:`, error.message);
           try { if (page) await page.close(); } catch { /* ignore */ }
           return { categoryId: cat.id, status: "error" };
         }
