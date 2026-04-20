@@ -819,17 +819,14 @@ export class ScraperService {
           // No image found in this product link
         }
 
-        // Extract stock from listing - si no es "0", usar ese valor
+        // Extract stock from listing - NO usar el valor "0" (es cantidad seleccionada, no stock)
+        // Solo verificamos si hay botones
         let stockFromListing: number | undefined;
         try {
-          const stockDiv = item.locator("div[id^='artcant']").first();
-          const stockCount = await stockDiv.count();
-          if (stockCount > 0) {
-            const stockText = await stockDiv.textContent();
-            const stockMatch = stockText?.match(/(\d+)/);
-            if (stockMatch && parseInt(stockMatch[1], 10) > 0) {
-              stockFromListing = parseInt(stockMatch[1], 10);
-            }
+          const masBtn = item.locator("button[onclick*='modMas']");
+          const menosBtn = item.locator("button[onclick*='modMenos']");
+          if ((await masBtn.count()) > 0 && (await menosBtn.count()) > 0) {
+            stockFromListing = 1; // Hay botones = hay stock
           }
         } catch {
           // No stock found
@@ -997,70 +994,23 @@ export class ScraperService {
         }
       }
 
-      // Try to get stock
-      const stockSelectors = [
-        "#ContentPlaceHolder1_lblStock",
-        "#lblStock",
-        ".stock",
-        "#stock",
-        "[itemprop='availability']",
-        ".product-stock",
-        ".stock-info",
-        "span:has-text('Stock')",
-        // Stock desde el div dinámico (funciona en listado Y detalle) - con ID exacto
-        "div[id^='artcant']",
-        "div[id*='artcant']",
-        // El div con el stock (puede tener espacios)
-        "[id^='artcant']",
-      ];
-
-      for (const selector of stockSelectors) {
-        try {
-          const stock = page.locator(selector).first();
-          if (await stock.count() > 0) {
-            const text = await stock.textContent();
-            if (text) {
-              const trimmedText = text.trim();
-              
-              // Check if it says "Sin stock" or "Sin Stock" = no stock
-              if (trimmedText.toLowerCase().includes("sin stock")) {
-                detail.stock = 0;
-                break;
-              }
-              // Check for "consultar" or similar = no stock
-              if (trimmedText.toLowerCase().includes("consultar") || trimmedText.toLowerCase().includes("sin disponibilidad")) {
-                detail.stock = 0;
-                break;
-              }
-              // Try to extract a number - usar regex que ignora espacios
-              const stockMatch = trimmedText.match(/(\d+)/);
-              if (stockMatch && parseInt(stockMatch[1], 10) > 0) {
-                detail.stock = parseInt(stockMatch[1], 10);
-                break;
-              }
-            }
-          }
-        } catch {
-          // Try next selector
-        }
-      }
-
-      // Si el valor es 0 (cantidad por defecto), asumimos que HAY stock porque hay botones +/-
-      // El valor 0 no significa "sin stock", significa "0 seleccionados"
-      // Si hay botones + y -, el producto tiene stock disponible
-      if (!detail.stock || detail.stock === 0) {
-        try {
-          // Buscar botones con onclick="modMas" y "modMenos"
-          const masBtn = page.locator("button[onclick*='modMas']");
-          const menosBtn = page.locator("button[onclick*='modMenos']");
-          if ((await masBtn.count()) > 0 && (await menosBtn.count()) > 0) {
-            // Hay botones +/-, MARCAMOS como que tiene stock (asumimos al menos 1)
-            detail.stock = 1;
-          }
-        } catch {
+      // El valor en artcant es la CANTIDAD SELECCIONADA (default 0), NO el stock
+      // NO usamos ese valor para el stock
+      // Solo verificamos si hay botones +/- para saber si hay stock
+      
+      // Verificar si hay botones de cantidad (+/-) = indica que hay stock
+      try {
+        const masBtn = page.locator("button[onclick*='modMas']");
+        const menosBtn = page.locator("button[onclick*='modMenos']");
+        if ((await masBtn.count()) > 0 && (await menosBtn.count()) > 0) {
+          // Hay botones +/-, MARCAMOS como que tiene stock (asumimos al menos 1)
+          detail.stock = 1;
+        } else {
           // No hay botones = sin stock
           detail.stock = 0;
         }
+      } catch {
+        detail.stock = 0;
       }
 
       return detail;
