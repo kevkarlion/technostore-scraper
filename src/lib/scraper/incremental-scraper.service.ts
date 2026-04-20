@@ -182,8 +182,13 @@ async function getDb(): Promise<Db> {
   if (!mongoClient) {
     mongoClient = new MongoClient(MONGO_URI, {
       maxPoolSize: 10,
-      minPoolSize: 1,       // Mantener 1 conexión viva
-      maxIdleTimeMS: 30000,  // 30 segundos - no cerrar durante scrape
+      minPoolSize: 1,
+      maxIdleTimeMS: 30000,
+      serverSelectionTimeoutMS: 10000,
+      // Opciones TLS para evitar errores de SSL
+      tls: true,
+      tlsAllowInvalidCertificates: true,
+      tlsAllowInvalidHostnames: true,
     });
     await mongoClient.connect();
     console.log("[Incremental] MongoDB connected (singleton)");
