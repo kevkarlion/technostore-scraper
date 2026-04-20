@@ -819,6 +819,22 @@ export class ScraperService {
           // No image found in this product link
         }
 
+        // Extract stock from listing (div with id "artcant{id}")
+        let stockFromListing = 0;
+        try {
+          const stockDiv = item.locator("div[id^='artcant']").first();
+          const stockCount = await stockDiv.count();
+          if (stockCount > 0) {
+            const stockText = await stockDiv.textContent();
+            const stockMatch = stockText?.match(/(\d+)/);
+            if (stockMatch) {
+              stockFromListing = parseInt(stockMatch[1], 10);
+            }
+          }
+        } catch {
+          // No stock found in listing, will try in detail page
+        }
+        
         const rawProduct: RawProduct = {
           externalId,
           name: name.substring(0, 200), // Limit name length
@@ -828,6 +844,8 @@ export class ScraperService {
           categories: [],
           productUrl: href.startsWith("http") ? href : `${this.config.baseUrl}/${href}`,
           rawElement: undefined,
+          // Optional: si scraped desde listado, puede usar este stock o el de detalle
+          ...(stockFromListing > 0 ? { stock: stockFromListing } : {}),
         };
 
         products.push(rawProduct);
