@@ -25,8 +25,11 @@ WORKDIR /app
 # Copy package files
 COPY package*.json ./
 
-# Install dependencies (postinstall installará playwright browsers también)
+# Install dependencies
 RUN npm install
+
+# Install Playwright browsers during build (so they're cached)
+RUN npx playwright install chromium
 
 # Copy app files
 COPY . .

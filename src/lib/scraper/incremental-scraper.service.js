@@ -467,9 +467,4 @@ async function runIncrementalScraper(forceFullScrape = false) {
         console.error("[Incremental] Error:", error);
         throw error;
     }
-    finally {
-        // Cerrar conexión MongoDB después de cada ejecución (libera conexiones para M0)
-        await closeDb();
-        console.log("[Incremental] MongoDB connection closed after scrape");
-    }
 }
