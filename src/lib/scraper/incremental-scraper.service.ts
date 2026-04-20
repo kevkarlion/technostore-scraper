@@ -390,59 +390,14 @@ export async function runIncrementalScraper(forceFullScrape: boolean = false): P
 
   console.log(`[Incremental] Pre-check result: ${preCheckResult.changed.length} changed, ${preCheckResult.unchanged.length} unchanged`);
 
-  // If no changes, finish
-  if (preCheckResult.changed.length === 0) {
-    return {
-      success: true,
-      preCheck: {
-        total: categories.length,
-        changed: preCheckResult.changed,
-        unchanged: preCheckResult.unchanged,
-        errors: preCheckResult.errors,
-      },
-      timestamp: new Date(),
-    };
-  }
+  // SIEMPRE scrapear - aunque no haya cambios en contenido
+  // Esto es para actualizar el STOCK que cambia seguido
+  const allCategoryIds = categories.map(c => c.id);
+  console.log("[Incremental] Processing ALL categories to update stock...");
 
-  // ============================================================
-  // RESUME LOGIC: Get categories already processed
-  // ============================================================
-  const processedCategories = new Set<string>();
-  try {
-    const db = await getDb();
-    const allStates = await db.collection("scraper_state").find().toArray();
-    for (const state of allStates) {
-      if (state.lastScrapeAt) {
-        const lastScrape = new Date(state.lastScrapeAt);
-        const now = new Date();
-        const hoursDiff = (now.getTime() - lastScrape.getTime()) / (1000 * 60 * 60);
-        if (hoursDiff < 2) {
-          processedCategories.add(state.categoryId);
-        }
-      }
-    }
-    console.log(`[Incremental] Found ${processedCategories.size} recently processed categories, will skip them`);
-  } catch (e) {
-    console.log("[Incremental] Could not load previous state, starting fresh");
-  }
-
-  // Filter categories to process
-  const categoriesToScrape = preCheckResult.changed.filter((catId) => !processedCategories.has(catId));
-  console.log(`[Incremental] Scraping ${categoriesToScrape.length} categories (filtered from ${preCheckResult.changed.length})...`);
-
-  if (categoriesToScrape.length === 0) {
-    console.log("[Incremental] All categories already processed recently");
-    return {
-      success: true,
-      preCheck: {
-        total: categories.length,
-        changed: preCheckResult.changed,
-        unchanged: preCheckResult.unchanged,
-        errors: preCheckResult.errors,
-      },
-      timestamp: new Date(),
-    };
-  }
+  // Filter categories to process - SIEMPRE todas (para atualizar stock)
+  const categoriesToScrape = allCategoryIds;
+  console.log(`[Incremental] Scraping ${categoriesToScrape.length} categories (ALL - stock update)...`);
 
   // Scrape changed categories in parallel
   const scrapeResults = {
