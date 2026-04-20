@@ -154,8 +154,8 @@ async function getCategoryPreview(page, idsubrubro1, baseUrl) {
 let mongoClient = null;
 let dbInstance = null;
 async function getDb() {
-    const MONGO_URI = process.env.MONGO_URI;
-    const DB_NAME = process.env.DB_NAME || "ecommerce";
+    const MONGO_URI = process.env.MONGO_URI || process.env.MONGODB_URI;
+    const DB_NAME = process.env.DB_NAME || process.env.MONGODB_DB_NAME || "ecommerce";
     if (!MONGO_URI) {
         throw new Error("MONGO_URI is required");
     }

@@ -171,8 +171,8 @@ let mongoClient: MongoClient | null = null;
 let dbInstance: Db | null = null;
 
 async function getDb(): Promise<Db> {
-  const MONGO_URI = process.env.MONGO_URI;
-  const DB_NAME = process.env.DB_NAME || "ecommerce";
+  const MONGO_URI = process.env.MONGO_URI || process.env.MONGODB_URI;
+  const DB_NAME = process.env.DB_NAME || process.env.MONGODB_DB_NAME || "ecommerce";
 
   if (!MONGO_URI) {
     throw new Error("MONGO_URI is required");
