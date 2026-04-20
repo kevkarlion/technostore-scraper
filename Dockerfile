@@ -29,7 +29,7 @@ COPY package*.json ./
 RUN npm install
 
 # Install Playwright browsers during build (so they're cached)
-RUN npx playwright install chromium
+RUN mkdir -p /app/playwright-cache && npx playwright install chromium
 
 # Copy app files
 COPY . .

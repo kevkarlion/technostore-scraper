@@ -452,6 +452,17 @@ const app = (0, express_1.default)();
 const PORT = process.env.PORT || 3001;
 app.use(express_1.default.json());
 app.get('/health', async (req, res) => { res.json({ status: 'ok', timestamp: new Date().toISOString() }); });
+// Debug: test MongoDB connection
+app.get('/debug/mongo-test', async (req, res) => {
+    try {
+        const db = await getDb();
+        const result = await db.command({ ping: 1 });
+        res.json({ success: true, mongo: 'connected', result });
+    }
+    catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
 app.post('/run', async (req, res) => {
     try {
         const forceFullScrape = req.query.force === 'true';

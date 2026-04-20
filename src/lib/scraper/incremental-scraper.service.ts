@@ -7,7 +7,7 @@ import path from "path";
 import os from "os";
 
 // Set browsers path
-const BROWSERS_PATH = process.env.PLAYWRIGHT_BROWSERS_PATH || "/tmp/ms-playwright";
+const BROWSERS_PATH = process.env.PLAYWRIGHT_BROWSERS_PATH || "/app/playwright-cache";
 process.env.PLAYWRIGHT_BROWSERS_PATH = BROWSERS_PATH;
 process.env.HOME = "/tmp";
 console.log("[Scraper] Initialized PLAYWRIGHT_BROWSERS_PATH:", BROWSERS_PATH);
