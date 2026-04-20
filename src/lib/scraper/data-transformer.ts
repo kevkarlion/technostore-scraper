@@ -91,6 +91,7 @@ export interface ScrapedProductDTO {
   stock: number;
   sku?: string;
   imageUrls: string[];
+  cloudinaryUrls?: string[];
   categories: string[];
   attributes: unknown[];
   rawData?: unknown;

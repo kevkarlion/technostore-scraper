@@ -1,18 +1,20 @@
 {
   "name": "scraper-server",
   "version": "1.0.1",
-  "main": "server.ts",
+  "main": "dist/server.js",
   "scripts": {
     "postinstall": "npx playwright install chromium",
-    "start": "ts-node server.ts"
+    "build": "tsc",
+    "start": "node dist/server.js"
   },
   "dependencies": {
-    "express": "^4.18.2",
-    "dotenv": "^16.3.1",
-    "playwright": "^1.40.0",
-    "mongodb": "^6.3.0",
+    "@types/node-cron": "^3.0.11",
     "cloudinary": "^1.40.0",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "mongodb": "^6.3.0",
     "node-cron": "^3.0.3",
+    "playwright": "^1.40.0",
     "ts-node": "^10.9.2",
     "typescript": "^5.3.3"
   }
