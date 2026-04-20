@@ -173,10 +173,6 @@ let dbInstance: Db | null = null;
 async function getDb(): Promise<Db> {
   const MONGO_URI = process.env.MONGO_URI || process.env.MONGODB_URI;
   const DB_NAME = process.env.DB_NAME || process.env.MONGODB_DB_NAME || "ecommerce";
-  
-  console.log("[DBG] MONGO_URI =", MONGO_URI ? `LENGTH=${MONGO_URI.length}` : "UNDEFINED");
-  if (MONGO_URI) console.log("[DBG] URI_START =", MONGO_URI.substring(0, 20));
-  console.log("[DBG] DB_NAME =", DB_NAME);
 
   if (!MONGO_URI) {
     throw new Error("MONGO_URI is required");
@@ -184,18 +180,16 @@ async function getDb(): Promise<Db> {
 
   // Reuse existing client instead of creating new one each time
   if (!mongoClient) {
-    console.log("[Incremental] Creating new MongoDB connection...");
+    console.log("[DB] Creating new MongoDB connection...");
     mongoClient = new MongoClient(MONGO_URI, {
       maxPoolSize: 5,
-      minPoolSize: 0,           // No mantener conexiones ociosas
-      maxIdleTimeMS: 10000,    // Cerrar inactivas después de 10s
+      minPoolSize: 0,
+      maxIdleTimeMS: 10000,
       waitQueueTimeoutMS: 5000,
       serverSelectionTimeoutMS: 5000,
     });
     await mongoClient.connect();
-    console.log("[Incremental] MongoDB connected (singleton, pool: 5)");
-  } else {
-    console.log("[Incremental] Reusing existing MongoDB connection");
+    console.log("[DB] MongoDB connected");
   }
 
   if (!dbInstance) {
