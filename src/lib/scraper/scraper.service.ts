@@ -116,6 +116,72 @@ const productRepository = {
     await collection.createIndex({ externalId: 1, supplier: 1 }, { unique: true });
     await collection.createIndex({ supplier: 1, status: 1 });
     await collection.createIndex({ categories: 1 });
+  },
+
+  // bulkUpsert - guarda TODOS los productos en 1 sola query
+  async bulkUpsert(products: any[]): Promise<{ created: number; updated: number; unchanged: number }> {
+    if (!products.length) return { created: 0, updated: 0, unchanged: 0 };
+    
+    const db = await getDb();
+    const collection = db.collection('products');
+    const now = new Date();
+    
+    // 1. Get todos los existentes en 1 query
+    const externalIds = products.map(p => p.externalId);
+    const existingDocs: any[] = await collection.find({ 
+      externalId: { $in: externalIds }, 
+      supplier: 'jotakp' 
+    }).toArray();
+    
+    const existingMap = new Map(existingDocs.map((d: any) => [d.externalId, d]));
+    const operations: any[] = [];
+    let created = 0, updated = 0, unchanged = 0;
+    
+    // 2. Preparar operaciones
+    for (const product of products) {
+      const existing = existingMap.get(product.externalId);
+      
+      if (!existing) {
+        // Insert nuevo
+        operations.push({
+          insertOne: {
+            document: { ...product, supplier: 'jotakp', status: 'active', lastSyncedAt: now, createdAt: now, updatedAt: now }
+          }
+        });
+        created++;
+      } else {
+        // Check cambios
+        const changes: any = { lastSyncedAt: now };
+        let hasChanges = false;
+        
+        const fields = ['name', 'description', 'price', 'priceRaw', 'currency', 'stock', 'sku', 'categories', 'imageUrls'];
+        for (const field of fields) {
+          if (product[field] !== undefined && JSON.stringify(existing[field]) !== JSON.stringify(product[field])) {
+            changes[field] = product[field];
+            hasChanges = true;
+          }
+        }
+        
+        if (hasChanges) {
+          operations.push({
+            updateOne: {
+              filter: { _id: existing._id },
+              update: { $set: changes }
+            }
+          });
+          updated++;
+        } else {
+          unchanged++;
+        }
+      }
+    }
+    
+    // 3. Ejecutar bulkWrite
+    if (operations.length > 0) {
+      await collection.bulkWrite(operations, { ordered: false });
+    }
+    
+    return { created, updated, unchanged };
   }
 };
 
@@ -1312,38 +1378,22 @@ export class ScraperService {
         await this.shortDelay();
       }
 
-      // Step 6: Save to database con control de cambios atómico (como Git)
-      console.log("[Scraper] Saving products to database (atomic upsert)...");
-      
+      // Step 6: Save to database con BULK WRITE (1 query para todos los productos)
+      console.log("[Scraper] Saving products to database (BULK)...");
       const seenExternalIds: string[] = [];
-      let created = 0;
-      let updated = 0;
-      let unchanged = 0;
+      let bulkCreated = 0, bulkUpdated = 0, bulkUnchanged = 0;
       
-      for (const product of products) {
-        try {
-          seenExternalIds.push(product.externalId);
-          
-          console.log(`[Scraper] Saving product ${product.externalId}: priceRaw=${product.priceRaw}, price=${product.price}`);
-          
-          const result = await productRepository.atomicUpsertByExternalId(product);
-          
-          if (result.created) {
-            created++;
-          } else if (result.updated) {
-            updated++;
-            if (result.changes.length > 0) {
-              console.log(`[Scraper] Updated ${product.externalId}: ${result.changes.join(", ")}`);
-            }
-          } else {
-            unchanged++;
-          }
-          
-          this.productsSavedCount++;
-        } catch (dbError) {
-          const errorMsg = dbError instanceof Error ? dbError.message : "Unknown error";
-          result.errors.push(`Failed to save product ${product.name}: ${errorMsg}`);
-        }
+      try {
+        const r = await productRepository.bulkUpsert(products);
+        bulkCreated = r.created;
+        bulkUpdated = r.updated;
+        bulkUnchanged = r.unchanged;
+        seenExternalIds.push(...products.map(p => p.externalId));
+        this.productsSavedCount = products.length;
+        console.log(`[Scraper] Bulk saved: ${bulkCreated} created, ${bulkUpdated} updated, ${bulkUnchanged} unchanged`);
+      } catch (dbError) {
+        const errorMsg = dbError instanceof Error ? dbError.message : "Unknown error";
+        result.errors.push(`Bulk save failed: ${errorMsg}`);
       }
       
       // Step 7: Marcar productos descontinuados de la categoría scrapeada
@@ -1437,9 +1487,9 @@ export class ScraperService {
         console.log("[Scraper] Skipping mark discontinued (category-specific scrape)");
       }
       
-      result.created = created;
-      result.updated = updated;
-      result.errors.push(`Unchanged: ${unchanged}, Discontinued: ${discontinuedCount}`);
+      result.created = bulkCreated;
+      result.updated = bulkUpdated;
+      result.errors.push(`Unchanged: ${bulkUnchanged}, Discontinued: ${discontinuedCount}`);
 
       // Mark run as completed
       if (this.currentRun) {
@@ -1451,7 +1501,7 @@ export class ScraperService {
       }
 
       result.success = true;
-      console.log(`[Scraper] Completed: ${created} created, ${updated} updated, ${unchanged} unchanged, ${discontinuedCount} discontinued`);
+      console.log(`[Scraper] Completed: ${bulkCreated} created, ${bulkUpdated} updated, ${bulkUnchanged} unchanged, ${discontinuedCount} discontinued`);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
       const scraperError = error as ScraperError;
