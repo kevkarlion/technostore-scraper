@@ -1,15 +1,4 @@
 "use strict";
-var __assign = (this && this.__assign) || function () {
-    __assign = Object.assign || function(t) {
-        for (var s, i = 1, n = arguments.length; i < n; i++) {
-            s = arguments[i];
-            for (var p in s) if (Object.prototype.hasOwnProperty.call(s, p))
-                t[p] = s[p];
-        }
-        return t;
-    };
-    return __assign.apply(this, arguments);
-};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.jotakpCategories = void 0;
 exports.getScraperConfig = getScraperConfig;
@@ -178,7 +167,7 @@ exports.jotakpCategories = [
 /**
  * Default selectors for Jotakp supplier
  */
-var defaultSelectors = {
+const defaultSelectors = {
     login: {
         formSelector: "#form1",
         emailInputSelector: "#ContentPlaceHolder1_txtUsuario, #txtUsuario, #TxtEmail",
@@ -208,10 +197,10 @@ var defaultSelectors = {
  * Get scraper configuration from environment variables
  */
 function getScraperConfig() {
-    var SUPPLIER_URL = process.env.SUPPLIER_URL || "https://jotakp.dyndns.org";
-    var SUPPLIER_LOGIN_URL = process.env.SUPPLIER_LOGIN_URL || "http://jotakp.dyndns.org/loginext.aspx";
-    var SUPPLIER_EMAIL = process.env.SUPPLIER_EMAIL || "20418216795";
-    var SUPPLIER_PASSWORD = process.env.SUPPLIER_PASSWORD || "123456";
+    const SUPPLIER_URL = process.env.SUPPLIER_URL || "https://jotakp.dyndns.org";
+    const SUPPLIER_LOGIN_URL = process.env.SUPPLIER_LOGIN_URL || "http://jotakp.dyndns.org/loginext.aspx";
+    const SUPPLIER_EMAIL = process.env.SUPPLIER_EMAIL || "20418216795";
+    const SUPPLIER_PASSWORD = process.env.SUPPLIER_PASSWORD || "123456";
     if (!SUPPLIER_URL) {
         throw new Error("SUPPLIER_URL is required in environment variables");
     }
@@ -225,7 +214,7 @@ function getScraperConfig() {
         throw new Error("SUPPLIER_PASSWORD is required in environment variables");
     }
     // Extract supplier name from URL
-    var supplierName = SUPPLIER_URL
+    const supplierName = SUPPLIER_URL
         .replace(/^https?:\/\//, "")
         .replace(/\..*/, "")
         .toLowerCase();
@@ -243,8 +232,8 @@ function getScraperConfig() {
  * Update selectors after site exploration
  */
 function updateSelectors(newSelectors) {
-    defaultSelectors.login = __assign(__assign({}, defaultSelectors.login), newSelectors.login);
-    defaultSelectors.productList = __assign(__assign({}, defaultSelectors.productList), newSelectors.productList);
-    defaultSelectors.product = __assign(__assign({}, defaultSelectors.product), newSelectors.product);
-    defaultSelectors.pagination = __assign(__assign({}, defaultSelectors.pagination), newSelectors.pagination);
+    defaultSelectors.login = { ...defaultSelectors.login, ...newSelectors.login };
+    defaultSelectors.productList = { ...defaultSelectors.productList, ...newSelectors.productList };
+    defaultSelectors.product = { ...defaultSelectors.product, ...newSelectors.product };
+    defaultSelectors.pagination = { ...defaultSelectors.pagination, ...newSelectors.pagination };
 }

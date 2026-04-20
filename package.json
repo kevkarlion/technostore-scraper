@@ -1,11 +1,11 @@
 {
   "name": "scraper-server",
   "version": "1.0.1",
-  "main": "dist/server.js",
+  "main": "server.js",
   "scripts": {
     "postinstall": "npx playwright install chromium",
     "build": "tsc",
-    "start": "node dist/server.js"
+    "start": "node server.js"
   },
   "dependencies": {
     "@types/node-cron": "^3.0.11",
