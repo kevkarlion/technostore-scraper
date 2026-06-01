@@ -1,0 +1,1076 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Scraper Monitoring Dashboard</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <style>
+    /* ============================================
+       Dark theme — GitHub-inspired palette
+       ============================================ */
+    :root {
+      --bg: #0d1117;
+      --surface: #161b22;
+      --surface-2: #1c2129;
+      --border: #30363d;
+      --text: #c9d1d9;
+      --text-muted: #8b949e;
+      --text-bright: #f0f6fc;
+      --accent: #58a6ff;
+      --success: #3fb950;
+      --warning: #d29922;
+      --error: #f85149;
+      --critical: #ff7b72;
+      --info: #79c0ff;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    /* ============================================
+       Layout — CSS Grid
+       ============================================ */
+    .app {
+      display: grid;
+      grid-template-rows: auto auto auto auto auto;
+      grid-template-areas:
+        "header"
+        "overview"
+        "health"
+        "metrics"
+        "history";
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 16px;
+      gap: 16px;
+    }
+    .header { grid-area: header; }
+    .overview-panel { grid-area: overview; }
+    .health-panel { grid-area: health; }
+    .metrics-panel { grid-area: metrics; }
+    .history-panel { grid-area: history; }
+
+    /* ============================================
+       Header
+       ============================================ */
+    .header {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 12px 16px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+    }
+    .header h1 {
+      margin: 0;
+      font-size: 18px;
+      color: var(--text-bright);
+    }
+    .header-right {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+    .refresh-btn {
+      background: var(--surface-2);
+      color: var(--text);
+      border: 1px solid var(--border);
+      padding: 6px 12px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 12px;
+    }
+    .refresh-btn:hover { background: var(--border); }
+    .refresh-btn:disabled { opacity: 0.5; cursor: wait; }
+
+    /* ============================================
+       Panels (shared)
+       ============================================ */
+    .panel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+    }
+    .panel-title {
+      margin: 0 0 12px 0;
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text-bright);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .panel-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+    .panel-header .panel-title { margin-bottom: 0; }
+
+    /* ============================================
+       Overview — stat cards in CSS grid
+       ============================================ */
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 12px;
+    }
+    .stat-card {
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 12px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .stat-label {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--text-muted);
+    }
+    .stat-value {
+      font-size: 20px;
+      font-weight: 600;
+      color: var(--text-bright);
+      word-break: break-word;
+    }
+    .stat-sub {
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    /* ============================================
+       Badges (status / severity)
+       ============================================ */
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 12px;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .badge-success { background: rgba(63, 185, 80, 0.15); color: var(--success); }
+    .badge-warning { background: rgba(210, 153, 34, 0.15); color: var(--warning); }
+    .badge-error   { background: rgba(248, 81, 73, 0.15); color: var(--error); }
+    .badge-info    { background: rgba(88, 166, 255, 0.15); color: var(--info); }
+    .badge-idle    { background: rgba(139, 148, 158, 0.15); color: var(--text-muted); }
+    .badge-stopped { background: rgba(210, 153, 34, 0.15); color: var(--warning); }
+    .badge-running { background: rgba(63, 185, 80, 0.15); color: var(--success); }
+    .badge-critical { background: rgba(255, 123, 114, 0.15); color: var(--critical); border: 1px solid var(--critical); }
+
+    /* ============================================
+       History table
+       ============================================ */
+    .filters {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+    .filters select, .filters input {
+      background: var(--surface-2);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 6px 8px;
+      font-size: 12px;
+      font-family: inherit;
+    }
+    .filters input[type="date"] { color-scheme: dark; }
+    .filters label { font-size: 12px; color: var(--text-muted); }
+
+    .history-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+    }
+    .history-table th {
+      background: var(--surface-2);
+      color: var(--text-muted);
+      text-align: left;
+      padding: 8px 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      font-size: 11px;
+      letter-spacing: 0.5px;
+      border-bottom: 1px solid var(--border);
+      cursor: pointer;
+      user-select: none;
+    }
+    .history-table th:hover { color: var(--text-bright); }
+    .history-table th.sort-asc::after  { content: " ▲"; color: var(--accent); }
+    .history-table th.sort-desc::after { content: " ▼"; color: var(--accent); }
+    .history-table td {
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--border);
+    }
+    .history-table tr:hover td { background: var(--surface-2); }
+    .history-table .actions { text-align: right; }
+
+    .pagination {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-top: 12px;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+    .pagination-buttons { display: flex; gap: 6px; }
+
+    /* ============================================
+       Metrics charts
+       ============================================ */
+    .metrics-controls {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+    .metrics-controls select {
+      background: var(--surface-2);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 6px 8px;
+      font-size: 12px;
+      font-family: inherit;
+    }
+    .charts-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 16px;
+    }
+    .chart-card {
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 12px;
+    }
+    .chart-card h3 {
+      margin: 0 0 8px 0;
+      font-size: 12px;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      font-weight: 600;
+    }
+    .chart-card .chart-wrap {
+      position: relative;
+      height: 220px;
+    }
+
+    /* ============================================
+       Health panel
+       ============================================ */
+    .health-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .health-empty {
+      color: var(--text-muted);
+      font-size: 13px;
+      padding: 12px;
+      text-align: center;
+    }
+    .health-item {
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--info);
+      border-radius: 4px;
+      padding: 10px 12px;
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 12px;
+    }
+    .health-item.severity-warning { border-left-color: var(--warning); }
+    .health-item.severity-critical { border-left-color: var(--critical); }
+    .health-item.severity-info { border-left-color: var(--info); }
+    .health-item-body { flex: 1; min-width: 0; }
+    .health-item-message {
+      color: var(--text-bright);
+      font-size: 13px;
+      font-weight: 500;
+      margin-bottom: 4px;
+      word-break: break-word;
+    }
+    .health-item-meta {
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+    .health-item-meta code {
+      font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+      font-size: 11px;
+      background: var(--bg);
+      padding: 1px 4px;
+      border-radius: 3px;
+    }
+
+    /* ============================================
+       Modal — execution detail
+       ============================================ */
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.7);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+      padding: 16px;
+    }
+    .modal-overlay.open { display: flex; }
+    .modal {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      max-width: 900px;
+      width: 100%;
+      max-height: 90vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .modal-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--border);
+    }
+    .modal-header h2 {
+      margin: 0;
+      font-size: 16px;
+      color: var(--text-bright);
+    }
+    .modal-close {
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      font-size: 24px;
+      line-height: 1;
+      cursor: pointer;
+      padding: 0 4px;
+    }
+    .modal-close:hover { color: var(--text-bright); }
+    .modal-body {
+      padding: 16px;
+      overflow-y: auto;
+    }
+    .detail-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 8px 16px;
+      margin-bottom: 16px;
+    }
+    .detail-row {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .detail-row .label {
+      font-size: 11px;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .detail-row .value {
+      font-size: 13px;
+      color: var(--text-bright);
+      word-break: break-word;
+    }
+    .log-stream {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 8px 10px;
+      font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+      font-size: 11px;
+      color: var(--text);
+      max-height: 280px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+      line-height: 1.4;
+    }
+    .log-line.log-error { color: var(--error); }
+    .log-line.log-warn  { color: var(--warning); }
+    .errors-list {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+    }
+    .errors-list li {
+      background: rgba(248, 81, 73, 0.08);
+      border-left: 3px solid var(--error);
+      padding: 6px 10px;
+      border-radius: 0 4px 4px 0;
+      margin-bottom: 4px;
+      font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+      font-size: 12px;
+      color: var(--error);
+      word-break: break-word;
+    }
+    .section-title {
+      font-size: 12px;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      letter-spacing: 0.5px;
+      margin: 16px 0 8px 0;
+      font-weight: 600;
+    }
+
+    /* ============================================
+       Banners (offline / loading)
+       ============================================ */
+    .banner {
+      padding: 10px 14px;
+      border-radius: 6px;
+      margin-bottom: 12px;
+      font-size: 13px;
+      display: none;
+    }
+    .banner.visible { display: block; }
+    .banner-offline {
+      background: rgba(248, 81, 73, 0.15);
+      border: 1px solid var(--error);
+      color: var(--error);
+    }
+    .empty-state {
+      color: var(--text-muted);
+      font-size: 13px;
+      padding: 16px;
+      text-align: center;
+    }
+    .loading {
+      color: var(--text-muted);
+      font-size: 12px;
+      text-align: center;
+      padding: 20px;
+    }
+
+    /* ============================================
+       Responsive — mobile (≥360px)
+       ============================================ */
+    @media (max-width: 640px) {
+      .app { padding: 8px; gap: 8px; }
+      .header { padding: 10px 12px; }
+      .header h1 { font-size: 16px; }
+      .panel { padding: 12px; }
+      .stats-grid { grid-template-columns: 1fr 1fr; gap: 8px; }
+      .stat-value { font-size: 16px; }
+      .history-table th, .history-table td { padding: 6px 6px; font-size: 11px; }
+      .history-table .col-products, .history-table .col-errors { display: none; }
+      .charts-grid { grid-template-columns: 1fr; }
+      .filters { flex-direction: column; align-items: stretch; }
+      .filters select, .filters input { width: 100%; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <!-- ============== HEADER ============== -->
+    <div class="header">
+      <h1>Scraper Monitoring Dashboard</h1>
+      <div class="header-right">
+        <span id="last-updated">Never updated</span>
+        <button class="refresh-btn" id="refresh-btn">Refresh</button>
+      </div>
+    </div>
+
+    <div class="banner banner-offline" id="offline-banner">
+      API unavailable — showing last known data. Will retry automatically.
+    </div>
+
+    <!-- ============== OVERVIEW ============== -->
+    <div class="panel overview-panel">
+      <div class="panel-title">Overview</div>
+      <div class="stats-grid" id="overview-stats">
+        <div class="loading">Loading…</div>
+      </div>
+    </div>
+
+    <!-- ============== HEALTH ============== -->
+    <div class="panel health-panel">
+      <div class="panel-header">
+        <div class="panel-title">Health Alerts</div>
+        <button class="refresh-btn" id="health-check-btn">Check now</button>
+      </div>
+      <div id="health-content" class="loading">Loading…</div>
+    </div>
+
+    <!-- ============== METRICS ============== -->
+    <div class="panel metrics-panel">
+      <div class="panel-header">
+        <div class="panel-title">Metrics</div>
+        <div class="metrics-controls">
+          <label for="metrics-range">Range:</label>
+          <select id="metrics-range">
+            <option value="7">Last 7 days</option>
+            <option value="14">Last 14 days</option>
+            <option value="30">Last 30 days</option>
+            <option value="90">Last 90 days</option>
+          </select>
+        </div>
+      </div>
+      <div class="charts-grid">
+        <div class="chart-card">
+          <h3>Products Found Over Time</h3>
+          <div class="chart-wrap"><canvas id="chart-products"></canvas></div>
+        </div>
+        <div class="chart-card">
+          <h3>Execution Duration (avg ms)</h3>
+          <div class="chart-wrap"><canvas id="chart-duration"></canvas></div>
+        </div>
+        <div class="chart-card">
+          <h3>Daily Success / Error Counts</h3>
+          <div class="chart-wrap"><canvas id="chart-counts"></canvas></div>
+        </div>
+        <div class="chart-card">
+          <h3>Success Rate (%)</h3>
+          <div class="chart-wrap"><canvas id="chart-success"></canvas></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============== HISTORY ============== -->
+    <div class="panel history-panel">
+      <div class="panel-title">Execution History</div>
+      <div class="filters">
+        <label for="filter-status">Status:</label>
+        <select id="filter-status">
+          <option value="">All</option>
+          <option value="success">Success</option>
+          <option value="warning">Warning</option>
+          <option value="error">Error</option>
+        </select>
+        <label for="filter-from">From:</label>
+        <input type="date" id="filter-from" />
+        <label for="filter-to">To:</label>
+        <input type="date" id="filter-to" />
+        <button class="refresh-btn" id="history-apply">Apply</button>
+      </div>
+      <div id="history-content" class="loading">Loading…</div>
+      <div class="pagination" id="history-pagination" style="display:none">
+        <span id="pagination-info"></span>
+        <div class="pagination-buttons">
+          <button class="refresh-btn" id="page-prev">‹ Prev</button>
+          <button class="refresh-btn" id="page-next">Next ›</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============== EXECUTION DETAIL MODAL ============== -->
+  <div class="modal-overlay" id="execution-modal">
+    <div class="modal">
+      <div class="modal-header">
+        <h2>Execution Detail</h2>
+        <button class="modal-close" id="modal-close" aria-label="Close">×</button>
+      </div>
+      <div class="modal-body" id="modal-body">
+        <div class="loading">Loading…</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // ============================================
+    // Dashboard controller
+    // ============================================
+    const API_BASE = '/api/monitoring';
+    const POLL_INTERVAL_MS = 30_000;
+
+    // Local state
+    let historyPage = 1;
+    let historyLimit = 20;
+    let historyTotal = 0;
+    let charts = {}; // chart.js instances
+
+    // ============================================
+    // Utilities
+    // ============================================
+    function fmtDate(d) {
+      if (!d) return '—';
+      const date = new Date(d);
+      return date.toLocaleString();
+    }
+    function fmtDuration(ms) {
+      if (ms == null) return '—';
+      if (ms < 1000) return ms + 'ms';
+      const s = Math.round(ms / 1000);
+      if (s < 60) return s + 's';
+      const m = Math.floor(s / 60);
+      const rs = s % 60;
+      return m + 'm ' + rs + 's';
+    }
+    function escapeHtml(s) {
+      if (s == null) return '';
+      return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+    }
+    function setOffline(offline) {
+      document.getElementById('offline-banner').classList.toggle('visible', offline);
+    }
+    function setLastUpdated() {
+      document.getElementById('last-updated').textContent =
+        'Last updated: ' + new Date().toLocaleTimeString();
+    }
+
+    // ============================================
+    // API helpers
+    // ============================================
+    async function apiGet(path) {
+      const res = await fetch(API_BASE + path, { headers: { 'Accept': 'application/json' } });
+      if (!res.ok) throw new Error('API ' + res.status);
+      return res.json();
+    }
+    async function apiPost(path) {
+      const res = await fetch(API_BASE + path, { method: 'POST', headers: { 'Accept': 'application/json' } });
+      if (!res.ok) throw new Error('API ' + res.status);
+      return res.json();
+    }
+
+    // ============================================
+    // Overview
+    // ============================================
+    async function loadOverview() {
+      const data = await apiGet('/status');
+      const container = document.getElementById('overview-stats');
+      const lastExec = data.lastExecution;
+      const statusClass = 'badge-' + (data.scraperStatus || 'idle');
+
+      container.innerHTML = `
+        <div class="stat-card">
+          <span class="stat-label">Scraper Status</span>
+          <span class="stat-value"><span class="badge ${statusClass}">${escapeHtml(data.scraperStatus || 'idle')}</span></span>
+          <span class="stat-sub">${data.lastExecutionTimeAgo ? 'Last run: ' + escapeHtml(data.lastExecutionTimeAgo) : 'No runs yet'}</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">Last Execution</span>
+          <span class="stat-value">${lastExec ? fmtDuration(lastExec.durationMs) : '—'}</span>
+          <span class="stat-sub">${lastExec ? fmtDate(lastExec.startedAt) : '—'}</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">Success Rate (7d)</span>
+          <span class="stat-value">${data.successRateLast7Days ?? 0}%</span>
+          <span class="stat-sub">7-day rolling</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">Errors (24h)</span>
+          <span class="stat-value" style="color: ${(data.errorsLast24h || 0) > 0 ? 'var(--error)' : 'var(--text-bright)'}">${data.errorsLast24h ?? 0}</span>
+          <span class="stat-sub">Last 24 hours</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">Avg Duration (7d)</span>
+          <span class="stat-value">${fmtDuration(data.avgDurationLast7Days)}</span>
+          <span class="stat-sub">7-day average</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">Products Found (7d)</span>
+          <span class="stat-value">${(data.totalProductsFound ?? 0).toLocaleString()}</span>
+          <span class="stat-sub">Across all categories</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">Products Updated (7d)</span>
+          <span class="stat-value">${(data.totalProductsUpdated ?? 0).toLocaleString()}</span>
+          <span class="stat-sub">Across all categories</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">Last Trigger</span>
+          <span class="stat-value">${lastExec ? escapeHtml(lastExec.triggerSource || '—') : '—'}</span>
+          <span class="stat-sub">cron / http / manual</span>
+        </div>
+      `;
+    }
+
+    // ============================================
+    // Health
+    // ============================================
+    async function loadHealth() {
+      const data = await apiGet('/health');
+      const container = document.getElementById('health-content');
+
+      if (!data.alerts || data.alerts.length === 0) {
+        container.innerHTML = '<div class="health-empty">No active alerts — scraper is healthy.</div>';
+        return;
+      }
+
+      container.className = 'health-list';
+      container.innerHTML = data.alerts.map(a => {
+        const detected = fmtDate(a.detectedAt);
+        const type = a.checkType || 'unknown';
+        const sev = a.severity || 'info';
+        return `
+          <div class="health-item severity-${escapeHtml(sev)}">
+            <div class="health-item-body">
+              <div class="health-item-message">${escapeHtml(a.message || '')}</div>
+              <div class="health-item-meta">
+                <span class="badge badge-${escapeHtml(sev)}">${escapeHtml(sev)}</span>
+                &nbsp;<code>${escapeHtml(type)}</code>
+                &nbsp;·&nbsp; ${escapeHtml(detected)}
+              </div>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    // ============================================
+    // History
+    // ============================================
+    async function loadHistory() {
+      const status = document.getElementById('filter-status').value;
+      const from = document.getElementById('filter-from').value;
+      const to = document.getElementById('filter-to').value;
+
+      const params = new URLSearchParams({
+        page: String(historyPage),
+        limit: String(historyLimit),
+      });
+      if (status) params.set('status', status);
+      if (from) params.set('from', from);
+      if (to) params.set('to', to);
+
+      const data = await apiGet('/history?' + params.toString());
+      const container = document.getElementById('history-content');
+      const pagination = document.getElementById('history-pagination');
+
+      historyTotal = data.pagination?.total ?? 0;
+
+      if (!data.data || data.data.length === 0) {
+        container.innerHTML = '<div class="empty-state">No executions match the current filters.</div>';
+        pagination.style.display = 'none';
+        return;
+      }
+
+      container.innerHTML = `
+        <table class="history-table">
+          <thead>
+            <tr>
+              <th data-sort="startedAt" class="sort-desc">Started</th>
+              <th data-sort="durationMs">Duration</th>
+              <th data-sort="status">Status</th>
+              <th class="col-products">Products</th>
+              <th class="col-errors">Errors</th>
+              <th>Trigger</th>
+              <th class="actions">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${data.data.map(e => `
+              <tr>
+                <td>${escapeHtml(fmtDate(e.startedAt))}</td>
+                <td>${escapeHtml(fmtDuration(e.durationMs))}</td>
+                <td><span class="badge badge-${escapeHtml(e.status)}">${escapeHtml(e.status)}</span></td>
+                <td class="col-products">${(e.productsFound ?? 0).toLocaleString()}</td>
+                <td class="col-errors">${e.errorCount ?? 0}</td>
+                <td>${escapeHtml(e.triggerSource || '—')}</td>
+                <td class="actions"><a href="#" data-exec-id="${escapeHtml(e._id)}">View</a></td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      `;
+
+      // Bind view links
+      container.querySelectorAll('a[data-exec-id]').forEach(a => {
+        a.addEventListener('click', e => {
+          e.preventDefault();
+          openExecutionDetail(a.getAttribute('data-exec-id'));
+        });
+      });
+
+      // Show pagination
+      const totalPages = data.pagination?.totalPages ?? 1;
+      const start = (historyPage - 1) * historyLimit + 1;
+      const end = Math.min(historyPage * historyLimit, historyTotal);
+      document.getElementById('pagination-info').textContent =
+        totalPages === 0
+          ? 'No results'
+          : `Showing ${start}–${end} of ${historyTotal} (page ${historyPage} of ${totalPages})`;
+      pagination.style.display = 'flex';
+      document.getElementById('page-prev').disabled = historyPage <= 1;
+      document.getElementById('page-next').disabled = historyPage >= totalPages;
+    }
+
+    // ============================================
+    // Execution detail modal
+    // ============================================
+    async function openExecutionDetail(id) {
+      const modal = document.getElementById('execution-modal');
+      const body = document.getElementById('modal-body');
+      body.innerHTML = '<div class="loading">Loading…</div>';
+      modal.classList.add('open');
+
+      try {
+        const e = await apiGet('/executions/' + encodeURIComponent(id));
+        const statusClass = 'badge-' + (e.status || 'idle');
+        const errors = e.errors || [];
+        const logs = e.logEntries || [];
+
+        body.innerHTML = `
+          <div class="detail-grid">
+            <div class="detail-row"><span class="label">Status</span><span class="value"><span class="badge ${statusClass}">${escapeHtml(e.status || '—')}</span></span></div>
+            <div class="detail-row"><span class="label">Trigger</span><span class="value">${escapeHtml(e.triggerSource || '—')}</span></div>
+            <div class="detail-row"><span class="label">Started</span><span class="value">${escapeHtml(fmtDate(e.startedAt))}</span></div>
+            <div class="detail-row"><span class="label">Completed</span><span class="value">${escapeHtml(fmtDate(e.completedAt))}</span></div>
+            <div class="detail-row"><span class="label">Duration</span><span class="value">${escapeHtml(fmtDuration(e.durationMs))}</span></div>
+            <div class="detail-row"><span class="label">Duration Category</span><span class="value">${escapeHtml(e.metadata?.durationCategory || '—')}</span></div>
+            <div class="detail-row"><span class="label">Products Found</span><span class="value">${(e.productsFound ?? 0).toLocaleString()}</span></div>
+            <div class="detail-row"><span class="label">Products Created</span><span class="value">${(e.productsCreated ?? 0).toLocaleString()}</span></div>
+            <div class="detail-row"><span class="label">Products Updated</span><span class="value">${(e.productsUpdated ?? 0).toLocaleString()}</span></div>
+            <div class="detail-row"><span class="label">Products Unavailable</span><span class="value">${(e.productsUnavailable ?? 0).toLocaleString()}</span></div>
+            <div class="detail-row"><span class="label">Error Count</span><span class="value">${e.errorCount ?? 0}</span></div>
+            <div class="detail-row"><span class="label">Categories Scraped</span><span class="value">${(e.categoriesScraped || []).length}</span></div>
+            <div class="detail-row" style="grid-column: 1 / -1"><span class="label">Execution ID</span><span class="value"><code>${escapeHtml(e._id)}</code></span></div>
+          </div>
+
+          ${errors.length > 0 ? `
+            <div class="section-title">Errors (${errors.length})</div>
+            <ul class="errors-list">
+              ${errors.map(err => `<li>${escapeHtml(err)}</li>`).join('')}
+            </ul>
+          ` : ''}
+
+          <div class="section-title">Log Stream (${logs.length} lines)</div>
+          <div class="log-stream">${logs.length === 0 ? '— no log output captured —' : logs.map(line => {
+            let cls = 'log-line';
+            if (line.includes('ERROR')) cls += ' log-error';
+            else if (line.includes('WARN')) cls += ' log-warn';
+            return `<div class="${cls}">${escapeHtml(line)}</div>`;
+          }).join('')}</div>
+        `;
+      } catch (err) {
+        body.innerHTML = `<div class="empty-state">Failed to load execution: ${escapeHtml(err.message)}</div>`;
+      }
+    }
+
+    function closeModal() {
+      document.getElementById('execution-modal').classList.remove('open');
+    }
+
+    // ============================================
+    // Metrics charts
+    // ============================================
+    function destroyCharts() {
+      Object.values(charts).forEach(c => { try { c.destroy(); } catch {} });
+      charts = {};
+    }
+
+    async function loadMetrics() {
+      const range = document.getElementById('metrics-range').value;
+      const data = await apiGet('/metrics?range=' + range);
+      const snaps = data.snapshots || [];
+
+      const labels = snaps.map(s => s.date);
+      const productsFound = snaps.map(s => s.totalProductsFound || 0);
+      const avgDuration = snaps.map(s => s.avgDurationMs || 0);
+      const success = snaps.map(s => s.successCount || 0);
+      const warning = snaps.map(s => s.warningCount || 0);
+      const error = snaps.map(s => s.errorCount || 0);
+      const successRate = snaps.map(s => {
+        const r = s.totalRuns || 0;
+        return r > 0 ? Math.round(((s.successCount || 0) / r) * 100) : 0;
+      });
+
+      destroyCharts();
+
+      const gridColor = 'rgba(139, 148, 158, 0.15)';
+      const axisColor = 'rgba(139, 148, 158, 0.7)';
+      const baseOpts = {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: { mode: 'index', intersect: false },
+        },
+        scales: {
+          x: { ticks: { color: axisColor }, grid: { color: gridColor } },
+          y: { ticks: { color: axisColor }, grid: { color: gridColor }, beginAtZero: true },
+        },
+      };
+
+      // Products found — line chart
+      charts.products = new Chart(document.getElementById('chart-products'), {
+        type: 'line',
+        data: {
+          labels,
+          datasets: [{
+            label: 'Products Found',
+            data: productsFound,
+            borderColor: '#58a6ff',
+            backgroundColor: 'rgba(88, 166, 255, 0.1)',
+            tension: 0.3,
+            fill: true,
+            pointRadius: 3,
+          }],
+        },
+        options: baseOpts,
+      });
+
+      // Duration — line chart
+      charts.duration = new Chart(document.getElementById('chart-duration'), {
+        type: 'line',
+        data: {
+          labels,
+          datasets: [{
+            label: 'Avg Duration (ms)',
+            data: avgDuration,
+            borderColor: '#d29922',
+            backgroundColor: 'rgba(210, 153, 34, 0.1)',
+            tension: 0.3,
+            fill: true,
+            pointRadius: 3,
+          }],
+        },
+        options: baseOpts,
+      });
+
+      // Daily counts — stacked bar chart
+      charts.counts = new Chart(document.getElementById('chart-counts'), {
+        type: 'bar',
+        data: {
+          labels,
+          datasets: [
+            { label: 'Success', data: success, backgroundColor: 'rgba(63, 185, 80, 0.7)' },
+            { label: 'Warning', data: warning, backgroundColor: 'rgba(210, 153, 34, 0.7)' },
+            { label: 'Error',   data: error,   backgroundColor: 'rgba(248, 81, 73, 0.7)' },
+          ],
+        },
+        options: {
+          ...baseOpts,
+          plugins: { ...baseOpts.plugins, legend: { display: true, labels: { color: axisColor } } },
+          scales: {
+            x: { ...baseOpts.scales.x, stacked: true },
+            y: { ...baseOpts.scales.y, stacked: true },
+          },
+        },
+      });
+
+      // Success rate — bar chart
+      charts.success = new Chart(document.getElementById('chart-success'), {
+        type: 'bar',
+        data: {
+          labels,
+          datasets: [{
+            label: 'Success Rate %',
+            data: successRate,
+            backgroundColor: successRate.map(v =>
+              v >= 90 ? 'rgba(63, 185, 80, 0.7)' :
+              v >= 70 ? 'rgba(210, 153, 34, 0.7)' :
+                        'rgba(248, 81, 73, 0.7)'
+            ),
+          }],
+        },
+        options: {
+          ...baseOpts,
+          scales: {
+            x: baseOpts.scales.x,
+            y: { ...baseOpts.scales.y, max: 100 },
+          },
+        },
+      });
+    }
+
+    // ============================================
+    // Refresh orchestration
+    // ============================================
+    async function refreshAll() {
+      const btn = document.getElementById('refresh-btn');
+      btn.disabled = true;
+      try {
+        await Promise.all([loadOverview(), loadHealth(), loadHistory(), loadMetrics()]);
+        setOffline(false);
+        setLastUpdated();
+      } catch (e) {
+        console.error('Refresh failed:', e);
+        setOffline(true);
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    async function pollStatus() {
+      // Lightweight poll — only the overview (status badge + 7d stats)
+      try {
+        await loadOverview();
+        setOffline(false);
+        setLastUpdated();
+      } catch {
+        setOffline(true);
+      }
+    }
+
+    // ============================================
+    // Event wiring
+    // ============================================
+    document.getElementById('refresh-btn').addEventListener('click', refreshAll);
+    document.getElementById('health-check-btn').addEventListener('click', async () => {
+      const btn = document.getElementById('health-check-btn');
+      btn.disabled = true;
+      try {
+        await apiPost('/health/check');
+        await loadHealth();
+      } catch (e) {
+        console.error('Manual health check failed:', e);
+      } finally {
+        btn.disabled = false;
+      }
+    });
+    document.getElementById('history-apply').addEventListener('click', () => {
+      historyPage = 1;
+      loadHistory().catch(() => setOffline(true));
+    });
+    document.getElementById('page-prev').addEventListener('click', () => {
+      if (historyPage > 1) { historyPage--; loadHistory().catch(() => setOffline(true)); }
+    });
+    document.getElementById('page-next').addEventListener('click', () => {
+      historyPage++;
+      loadHistory().catch(() => setOffline(true));
+    });
+    document.getElementById('metrics-range').addEventListener('change', () => {
+      loadMetrics().catch(() => setOffline(true));
+    });
+    document.getElementById('modal-close').addEventListener('click', closeModal);
+    document.getElementById('execution-modal').addEventListener('click', e => {
+      if (e.target.id === 'execution-modal') closeModal();
+    });
+    document.addEventListener('keydown', e => {
+      if (e.key === 'Escape') closeModal();
+    });
+
+    // ============================================
+    // Boot
+    // ============================================
+    refreshAll();
+    setInterval(pollStatus, POLL_INTERVAL_MS);
+  </script>
+</body>
+</html>
