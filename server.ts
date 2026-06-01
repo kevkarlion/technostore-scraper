@@ -40,6 +40,7 @@ function formatArgentinaDate(date: Date | string): string {
 // Import new scraper modules (use alias to avoid conflict)
 import { runScraper, runIncrementalScraper as runIncrementalScraperNew, jotakpCategories } from './src/lib/scraper/index';
 import { initMonitoring, createExecutionRecorder, createHealthChecker, createMetricsAggregator } from './src/lib/monitoring';
+import { createMonitoringRouter } from './src/lib/monitoring/api';
 
 // CONFIG - with defaults and logging
 const SUPPLIER_URL = process.env.SUPPLIER_URL || 'https://jotakp.dyndns.org';
@@ -149,6 +150,7 @@ process.on('SIGTERM', async () => {
 let executionRecorder: any = null;
 let healthChecker: any = null;
 let metricsAggregator: any = null;
+let monitoringRouter: any = null;
 let metricsInterval: NodeJS.Timeout | null = null;
 let scraperStoppedInterval: NodeJS.Timeout | null = null;
 (async () => {
@@ -177,6 +179,18 @@ let scraperStoppedInterval: NodeJS.Timeout | null = null;
         console.error('[Health] Error in stopped check:', e);
       }
     }, 30 * 60 * 1000);
+
+    // Build the monitoring API router. The router is registered with
+    // express below via a deferred mount (see "Mount monitoring API"
+    // comment near `const app = express()`), because `app` is declared
+    // after this IIFE. Storing the router in a module-level let lets
+    // the middleware closure resolve it at request time.
+    monitoringRouter = createMonitoringRouter(
+      { db: database },
+      healthChecker,
+      metricsAggregator
+    );
+    console.log('[Monitoring] API router built — ready at /api/monitoring');
 
     console.log('[Monitoring] Initialized');
   } catch (e) {
@@ -532,6 +546,21 @@ async function runIncrementalScraper(forceFullScrape: boolean = false) {
 const app = express();
 const PORT = process.env.PORT || 3001;
 app.use(express.json());
+
+// Serve monitoring dashboard static files
+app.use('/dashboard', express.static('public/dashboard'));
+// Redirect root to the dashboard
+app.get('/', (_req, res) => res.redirect('/dashboard'));
+
+// Mount monitoring API via deferred middleware. The router is built
+// inside the IIFE above (which runs in the background after Mongo is
+// reachable); the closure here resolves it at request time. Until the
+// IIFE finishes, requests to /api/monitoring/* get a 503.
+app.use('/api/monitoring', (req, res, next) => {
+  if (monitoringRouter) return monitoringRouter(req, res, next);
+  res.status(503).json({ error: 'Monitoring not ready yet' });
+});
+
 app.get('/health', async (req, res) => { res.json({ status: 'ok', timestamp: new Date().toISOString() }); });
 
 // Debug: test MongoDB connection
