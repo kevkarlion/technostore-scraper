@@ -1,7 +1,10 @@
 // Public surface of the monitoring module.
-// Health-checker and metrics-aggregator land in PR 2 (Phase 2 tasks 2.3 / 2.4).
+// All three sidecar pieces (recorder, health-checker, metrics-aggregator)
+// are exported here. The HTTP API router and dashboard land in PR 3.
 
 export { createExecutionRecorder } from './execution-recorder';
+export { createHealthChecker } from './health-checker';
+export { createMetricsAggregator } from './metrics-aggregator';
 export * from './types';
 
 import type { MonitoringConfig } from './types';

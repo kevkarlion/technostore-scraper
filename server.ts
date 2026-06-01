@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import express from 'express';
 import { chromium } from 'playwright';
-import { MongoClient } from 'mongodb';
+import { MongoClient, ObjectId } from 'mongodb';
 import crypto from 'crypto';
 import cron from 'node-cron';
 
@@ -39,7 +39,7 @@ function formatArgentinaDate(date: Date | string): string {
 
 // Import new scraper modules (use alias to avoid conflict)
 import { runScraper, runIncrementalScraper as runIncrementalScraperNew, jotakpCategories } from './src/lib/scraper/index';
-import { initMonitoring, createExecutionRecorder } from './src/lib/monitoring';
+import { initMonitoring, createExecutionRecorder, createHealthChecker, createMetricsAggregator } from './src/lib/monitoring';
 
 // CONFIG - with defaults and logging
 const SUPPLIER_URL = process.env.SUPPLIER_URL || 'https://jotakp.dyndns.org';
@@ -147,16 +147,72 @@ process.on('SIGTERM', async () => {
 // Failures here are logged but never block server boot — the scraper
 // must work even if monitoring indexes fail to create.
 let executionRecorder: any = null;
+let healthChecker: any = null;
+let metricsAggregator: any = null;
+let metricsInterval: NodeJS.Timeout | null = null;
+let scraperStoppedInterval: NodeJS.Timeout | null = null;
 (async () => {
   try {
     const database = await getDb();
     await initMonitoring({ db: database });
     executionRecorder = createExecutionRecorder({ db: database });
+    healthChecker = createHealthChecker({ db: database });
+    metricsAggregator = createMetricsAggregator({ db: database });
+
+    // Start periodic metrics aggregation (hourly). The handle is kept so
+    // a future shutdown hook can clearInterval() cleanly.
+    metricsInterval = metricsAggregator.startPeriodicAggregation(60 * 60 * 1000);
+
+    // Start periodic scraper-stopped check (every 30 min). Outside the
+    // 07:00–24:00 Argentina active window the check is a no-op, so this
+    // timer is safe to run 24/7.
+    scraperStoppedInterval = setInterval(async () => {
+      try {
+        if (!healthChecker) return;
+        const alert = await healthChecker.checkScraperStopped();
+        if (alert) {
+          console.warn('[Health] Scraper stopped alert:', alert.message);
+        }
+      } catch (e) {
+        console.error('[Health] Error in stopped check:', e);
+      }
+    }, 30 * 60 * 1000);
+
     console.log('[Monitoring] Initialized');
   } catch (e) {
     console.error('[Monitoring] Init error:', e);
   }
 })();
+
+/**
+ * Fire-and-forget post-execution hooks: run anomaly detection and refresh
+ * today's metrics snapshot. Never throws — wrapped individually so a
+ * failure in one hook cannot starve the other.
+ */
+async function runPostExecutionHooks(executionId: string | null): Promise<void> {
+  if (!executionId) return;
+
+  if (healthChecker) {
+    try {
+      const database = await getDb();
+      const execDoc = await database.collection('execution_logs').findOne({ _id: new ObjectId(executionId) });
+      if (execDoc) {
+        // checkAfterExecution never throws, but we still wrap to be safe.
+        await healthChecker.checkAfterExecution(execDoc);
+      }
+    } catch (e) {
+      console.error('[Health] Error in post-execution checks:', e);
+    }
+  }
+
+  if (metricsAggregator) {
+    try {
+      await metricsAggregator.aggregateToday();
+    } catch (e) {
+      console.error('[Metrics] Error aggregating after execution:', e);
+    }
+  }
+}
 
 function generateContentHash(content: string): string {
   return crypto.createHash('md5').update(content).digest('hex');
@@ -584,6 +640,9 @@ app.post('/scraper/incremental', async (req, res) => {
           }),
         }
       );
+      // Fire-and-forget: health checks + today's metrics snapshot.
+      // Never awaited — the HTTP response must not wait on monitoring.
+      void runPostExecutionHooks(executionId);
       return res.json(result);
     } catch (error) {
       console.error(`[Incremental] Attempt ${attempt} failed:`, error.message);
@@ -660,6 +719,9 @@ app.listen(PORT, () => {
             }),
           }
         );
+        // Fire-and-forget: health checks + today's metrics snapshot.
+        // Never awaited — the cron tick must not block on monitoring.
+        void runPostExecutionHooks(executionId);
         const duration = Math.round((Date.now() - startTime) / 1000);
         console.log(`[Cron] Completed in ${duration}s - Created: ${result.scrapeResult?.created}, Updated: ${result.scrapeResult?.updated}`);
       } catch (error) {
