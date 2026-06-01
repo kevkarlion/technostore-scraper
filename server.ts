@@ -39,7 +39,7 @@ function formatArgentinaDate(date: Date | string): string {
 
 // Import new scraper modules (use alias to avoid conflict)
 import { runScraper, runIncrementalScraper as runIncrementalScraperNew, jotakpCategories } from './src/lib/scraper/index';
-import { initMonitoring, createExecutionRecorder, createHealthChecker, createMetricsAggregator } from './src/lib/monitoring';
+import { initMonitoring, createExecutionRecorder, createHealthChecker, createMetricsAggregator, createSSEEmitter } from './src/lib/monitoring';
 import { createMonitoringRouter } from './src/lib/monitoring/api';
 
 // CONFIG - with defaults and logging
@@ -150,6 +150,7 @@ process.on('SIGTERM', async () => {
 let executionRecorder: any = null;
 let healthChecker: any = null;
 let metricsAggregator: any = null;
+let sseEmitter: any = null;
 let monitoringRouter: any = null;
 let metricsInterval: NodeJS.Timeout | null = null;
 let scraperStoppedInterval: NodeJS.Timeout | null = null;
@@ -160,6 +161,7 @@ let scraperStoppedInterval: NodeJS.Timeout | null = null;
     executionRecorder = createExecutionRecorder({ db: database });
     healthChecker = createHealthChecker({ db: database });
     metricsAggregator = createMetricsAggregator({ db: database });
+    sseEmitter = createSSEEmitter();
 
     // Start periodic metrics aggregation (hourly). The handle is kept so
     // a future shutdown hook can clearInterval() cleanly.
@@ -174,6 +176,10 @@ let scraperStoppedInterval: NodeJS.Timeout | null = null;
         const alert = await healthChecker.checkScraperStopped();
         if (alert) {
           console.warn('[Health] Scraper stopped alert:', alert.message);
+          if (sseEmitter) {
+            sseEmitter.broadcast('health-alert', alert);
+            console.log(`[SSE] Broadcast health-alert: scraper-stopped (${alert.severity})`);
+          }
         }
       } catch (e) {
         console.error('[Health] Error in stopped check:', e);
@@ -188,7 +194,8 @@ let scraperStoppedInterval: NodeJS.Timeout | null = null;
     monitoringRouter = createMonitoringRouter(
       { db: database },
       healthChecker,
-      metricsAggregator
+      metricsAggregator,
+      sseEmitter
     );
     console.log('[Monitoring] API router built — ready at /api/monitoring');
 
@@ -212,7 +219,20 @@ async function runPostExecutionHooks(executionId: string | null): Promise<void> 
       const execDoc = await database.collection('execution_logs').findOne({ _id: new ObjectId(executionId) });
       if (execDoc) {
         // checkAfterExecution never throws, but we still wrap to be safe.
-        await healthChecker.checkAfterExecution(execDoc);
+        const alerts: any[] = await healthChecker.checkAfterExecution(execDoc) || [];
+
+        // Broadcast detected alerts via SSE in real-time
+        if (alerts.length > 0 && sseEmitter) {
+          for (const alert of alerts) {
+            const payload = {
+              ...alert,
+              _id: alert._id?.toString?.() || undefined,
+              executionId,
+            };
+            sseEmitter.broadcast('health-alert', payload);
+            console.log(`[SSE] Broadcast health-alert: ${alert.checkType} (${alert.severity})`);
+          }
+        }
       }
     } catch (e) {
       console.error('[Health] Error in post-execution checks:', e);

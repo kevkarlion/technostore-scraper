@@ -100,6 +100,7 @@ function transformProduct(raw, supplier) {
         categories: raw.categories,
         attributes: [],
         rawData: raw.rawElement ? { rawElement: "Available" } : undefined,
+        inStock: true,
     };
     console.log(`[Transform] Output priceRaw: ${scrapedProduct.priceRaw}`);
     return scrapedProduct;

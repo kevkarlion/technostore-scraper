@@ -73,6 +73,8 @@ function formatArgentinaDate(date) {
 }
 // Import new scraper modules (use alias to avoid conflict)
 const index_1 = require("./src/lib/scraper/index");
+const monitoring_1 = require("./src/lib/monitoring");
+const api_1 = require("./src/lib/monitoring/api");
 // CONFIG - with defaults and logging
 const SUPPLIER_URL = process.env.SUPPLIER_URL || 'https://jotakp.dyndns.org';
 const SUPPLIER_LOGIN_URL = process.env.SUPPLIER_LOGIN_URL || 'http://jotakp.dyndns.org/loginext.aspx';
@@ -162,6 +164,85 @@ process.on('SIGTERM', async () => {
     await closeMongoConnection();
     process.exit(0);
 });
+// Initialize monitoring module.
+// Sidecar pattern: runs in the background after Mongo is reachable.
+// Failures here are logged but never block server boot — the scraper
+// must work even if monitoring indexes fail to create.
+let executionRecorder = null;
+let healthChecker = null;
+let metricsAggregator = null;
+let monitoringRouter = null;
+let metricsInterval = null;
+let scraperStoppedInterval = null;
+(async () => {
+    try {
+        const database = await getDb();
+        await (0, monitoring_1.initMonitoring)({ db: database });
+        executionRecorder = (0, monitoring_1.createExecutionRecorder)({ db: database });
+        healthChecker = (0, monitoring_1.createHealthChecker)({ db: database });
+        metricsAggregator = (0, monitoring_1.createMetricsAggregator)({ db: database });
+        // Start periodic metrics aggregation (hourly). The handle is kept so
+        // a future shutdown hook can clearInterval() cleanly.
+        metricsInterval = metricsAggregator.startPeriodicAggregation(60 * 60 * 1000);
+        // Start periodic scraper-stopped check (every 30 min). Outside the
+        // 07:00–24:00 Argentina active window the check is a no-op, so this
+        // timer is safe to run 24/7.
+        scraperStoppedInterval = setInterval(async () => {
+            try {
+                if (!healthChecker)
+                    return;
+                const alert = await healthChecker.checkScraperStopped();
+                if (alert) {
+                    console.warn('[Health] Scraper stopped alert:', alert.message);
+                }
+            }
+            catch (e) {
+                console.error('[Health] Error in stopped check:', e);
+            }
+        }, 30 * 60 * 1000);
+        // Build the monitoring API router. The router is registered with
+        // express below via a deferred mount (see "Mount monitoring API"
+        // comment near `const app = express()`), because `app` is declared
+        // after this IIFE. Storing the router in a module-level let lets
+        // the middleware closure resolve it at request time.
+        monitoringRouter = (0, api_1.createMonitoringRouter)({ db: database }, healthChecker, metricsAggregator);
+        console.log('[Monitoring] API router built — ready at /api/monitoring');
+        console.log('[Monitoring] Initialized');
+    }
+    catch (e) {
+        console.error('[Monitoring] Init error:', e);
+    }
+})();
+/**
+ * Fire-and-forget post-execution hooks: run anomaly detection and refresh
+ * today's metrics snapshot. Never throws — wrapped individually so a
+ * failure in one hook cannot starve the other.
+ */
+async function runPostExecutionHooks(executionId) {
+    if (!executionId)
+        return;
+    if (healthChecker) {
+        try {
+            const database = await getDb();
+            const execDoc = await database.collection('execution_logs').findOne({ _id: new mongodb_1.ObjectId(executionId) });
+            if (execDoc) {
+                // checkAfterExecution never throws, but we still wrap to be safe.
+                await healthChecker.checkAfterExecution(execDoc);
+            }
+        }
+        catch (e) {
+            console.error('[Health] Error in post-execution checks:', e);
+        }
+    }
+    if (metricsAggregator) {
+        try {
+            await metricsAggregator.aggregateToday();
+        }
+        catch (e) {
+            console.error('[Metrics] Error aggregating after execution:', e);
+        }
+    }
+}
 function generateContentHash(content) {
     return crypto_1.default.createHash('md5').update(content).digest('hex');
 }
@@ -367,6 +448,7 @@ async function saveProductsBatch(products, categoryId) {
                     document: {
                         ...baseUpdate,
                         status: 'active',
+                        inStock: true,
                         currency: 'USD',
                         attributes: [],
                         createdAt: now,
@@ -394,7 +476,7 @@ async function saveProduct(product, categoryId) {
 }
 async function markDiscontinued(categoryId, scrapedIds) {
     const database = await getDb();
-    const result = await database.collection('products').updateMany({ categories: categoryId, supplier: 'jotakp', externalId: { $nin: scrapedIds } }, { $set: { status: 'discontinued', discontinuedAt: new Date() } });
+    const result = await database.collection('products').updateMany({ categories: categoryId, supplier: 'jotakp', externalId: { $nin: scrapedIds }, inStock: true }, { $set: { inStock: false } });
     return result.modifiedCount;
 }
 async function runIncrementalScraper(forceFullScrape = false) {
@@ -484,6 +566,19 @@ async function runIncrementalScraper(forceFullScrape = false) {
 const app = (0, express_1.default)();
 const PORT = process.env.PORT || 3001;
 app.use(express_1.default.json());
+// Serve monitoring dashboard static files
+app.use('/dashboard', express_1.default.static('public/dashboard'));
+// Redirect root to the dashboard
+app.get('/', (_req, res) => res.redirect('/dashboard'));
+// Mount monitoring API via deferred middleware. The router is built
+// inside the IIFE above (which runs in the background after Mongo is
+// reachable); the closure here resolves it at request time. Until the
+// IIFE finishes, requests to /api/monitoring/* get a 503.
+app.use('/api/monitoring', (req, res, next) => {
+    if (monitoringRouter)
+        return monitoringRouter(req, res, next);
+    res.status(503).json({ error: 'Monitoring not ready yet' });
+});
 app.get('/health', async (req, res) => { res.json({ status: 'ok', timestamp: new Date().toISOString() }); });
 // Debug: test MongoDB connection
 app.get('/debug/mongo-test', async (req, res) => {
@@ -578,7 +673,18 @@ app.post('/scraper/incremental', async (req, res) => {
         try {
             console.log(`[Incremental] Attempt ${attempt}/3...`);
             const { forceFullScrape } = req.body;
-            const result = await (0, index_1.runIncrementalScraper)(forceFullScrape);
+            const { result, executionId } = await executionRecorder.recordExecution('http', () => (0, index_1.runIncrementalScraper)(forceFullScrape), {
+                extractStats: (r) => ({
+                    productsFound: (r.scrapeResult?.created || 0) + (r.scrapeResult?.updated || 0),
+                    productsCreated: r.scrapeResult?.created || 0,
+                    productsUpdated: r.scrapeResult?.updated || 0,
+                    productsUnavailable: 0,
+                    errors: r.scrapeResult?.errors || [],
+                }),
+            });
+            // Fire-and-forget: health checks + today's metrics snapshot.
+            // Never awaited — the HTTP response must not wait on monitoring.
+            void runPostExecutionHooks(executionId);
             return res.json(result);
         }
         catch (error) {
@@ -637,7 +743,18 @@ app.listen(PORT, () => {
             console.log('[Cron] Running scheduled incremental scrape...');
             const startTime = Date.now();
             try {
-                const result = await (0, index_1.runIncrementalScraper)(false);
+                const { result, executionId } = await executionRecorder.recordExecution('cron', () => (0, index_1.runIncrementalScraper)(false), {
+                    extractStats: (r) => ({
+                        productsFound: (r.scrapeResult?.created || 0) + (r.scrapeResult?.updated || 0),
+                        productsCreated: r.scrapeResult?.created || 0,
+                        productsUpdated: r.scrapeResult?.updated || 0,
+                        productsUnavailable: 0,
+                        errors: r.scrapeResult?.errors || [],
+                    }),
+                });
+                // Fire-and-forget: health checks + today's metrics snapshot.
+                // Never awaited — the cron tick must not block on monitoring.
+                void runPostExecutionHooks(executionId);
                 const duration = Math.round((Date.now() - startTime) / 1000);
                 console.log(`[Cron] Completed in ${duration}s - Created: ${result.scrapeResult?.created}, Updated: ${result.scrapeResult?.updated}`);
             }

@@ -5,6 +5,7 @@
 export { createExecutionRecorder } from './execution-recorder';
 export { createHealthChecker } from './health-checker';
 export { createMetricsAggregator } from './metrics-aggregator';
+export { createSSEEmitter } from './sse-emitter';
 export * from './types';
 
 import type { MonitoringConfig } from './types';

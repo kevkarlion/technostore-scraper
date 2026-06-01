@@ -10,14 +10,17 @@
 //   GET  /metrics       — pre-aggregated snapshots + summary (R2.4)
 //   GET  /health        — active health alerts (R2.5)
 //   POST /health/check  — manually trigger the scraper-stopped check
+//   GET  /events        — SSE stream for real-time health alerts (R3.5)
 
 import { ObjectId } from 'mongodb';
 import type { MonitoringConfig, DashboardStatus, ExecutionLog } from './types';
+import type { SSEEmitter } from './sse-emitter';
 
 export function createMonitoringRouter(
   config: MonitoringConfig,
   healthChecker: any,
-  metricsAggregator: any
+  metricsAggregator: any,
+  sseEmitter?: SSEEmitter
 ) {
   const router = require('express').Router();
   const db = config.db;
@@ -329,6 +332,48 @@ export function createMonitoringRouter(
       res.status(500).json({ error: 'Failed to run health check' });
     }
   });
+
+  /**
+   * GET /events — SSE stream for real-time health alerts (R3.5).
+   *
+   * The server pushes two event types:
+   *   health-alert  — a new anomaly was detected (critical / warning / info)
+   *   heartbeat     — keepalive every 30 s (event: "heartbeat", data: "ping")
+   *
+   * Clients (dashboard) subscribe via native EventSource. No polyfill needed.
+   */
+  if (sseEmitter) {
+    router.get('/events', (req: any, res: any) => {
+      // SSE headers per spec
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+        'X-Accel-Buffering': 'no', // Disable nginx buffering if proxied
+      });
+
+      // Send an initial comment to flush headers
+      res.write(':ok\n\n');
+
+      // Register client
+      sseEmitter.addClient(res);
+
+      // Heartbeat every 30 s to keep the connection alive
+      const heartbeat = setInterval(() => {
+        try {
+          res.write('event: heartbeat\ndata: ping\n\n');
+        } catch {
+          clearInterval(heartbeat);
+        }
+      }, 30_000);
+
+      // Cleanup on disconnect
+      req.on('close', () => {
+        clearInterval(heartbeat);
+        sseEmitter.removeClient(res);
+      });
+    });
+  }
 
   return router;
 }

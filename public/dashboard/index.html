@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="es">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Scraper Monitoring Dashboard</title>
+  <title>Panel de Monitoreo — Scraper</title>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   <style>
     /* ============================================
@@ -493,63 +493,63 @@
   <div class="app">
     <!-- ============== HEADER ============== -->
     <div class="header">
-      <h1>Scraper Monitoring Dashboard</h1>
+      <h1>Panel de Monitoreo</h1>
       <div class="header-right">
-        <span id="last-updated">Never updated</span>
-        <button class="refresh-btn" id="refresh-btn">Refresh</button>
+        <span id="last-updated">Nunca actualizado</span>
+        <button class="refresh-btn" id="refresh-btn">Actualizar</button>
       </div>
     </div>
 
     <div class="banner banner-offline" id="offline-banner">
-      API unavailable — showing last known data. Will retry automatically.
+      API no disponible — mostrando últimos datos conocidos. Se reintentará automáticamente.
     </div>
 
     <!-- ============== OVERVIEW ============== -->
     <div class="panel overview-panel">
-      <div class="panel-title">Overview</div>
+      <div class="panel-title">Resumen</div>
       <div class="stats-grid" id="overview-stats">
-        <div class="loading">Loading…</div>
+        <div class="loading">Cargando…</div>
       </div>
     </div>
 
     <!-- ============== HEALTH ============== -->
     <div class="panel health-panel">
       <div class="panel-header">
-        <div class="panel-title">Health Alerts</div>
-        <button class="refresh-btn" id="health-check-btn">Check now</button>
+        <div class="panel-title">Alertas de Salud</div>
+        <button class="refresh-btn" id="health-check-btn">Verificar ahora</button>
       </div>
-      <div id="health-content" class="loading">Loading…</div>
+      <div id="health-content" class="loading">Cargando…</div>
     </div>
 
     <!-- ============== METRICS ============== -->
     <div class="panel metrics-panel">
       <div class="panel-header">
-        <div class="panel-title">Metrics</div>
+        <div class="panel-title">Métricas</div>
         <div class="metrics-controls">
-          <label for="metrics-range">Range:</label>
+          <label for="metrics-range">Rango:</label>
           <select id="metrics-range">
-            <option value="7">Last 7 days</option>
-            <option value="14">Last 14 days</option>
-            <option value="30">Last 30 days</option>
-            <option value="90">Last 90 days</option>
+            <option value="7">Últimos 7 días</option>
+            <option value="14">Últimos 14 días</option>
+            <option value="30">Últimos 30 días</option>
+            <option value="90">Últimos 90 días</option>
           </select>
         </div>
       </div>
       <div class="charts-grid">
         <div class="chart-card">
-          <h3>Products Found Over Time</h3>
+          <h3>Productos Encontrados en el Tiempo</h3>
           <div class="chart-wrap"><canvas id="chart-products"></canvas></div>
         </div>
         <div class="chart-card">
-          <h3>Execution Duration (avg ms)</h3>
+          <h3>Duración Promedio (ms)</h3>
           <div class="chart-wrap"><canvas id="chart-duration"></canvas></div>
         </div>
         <div class="chart-card">
-          <h3>Daily Success / Error Counts</h3>
+          <h3>Ejecuciones por Día (éxito/error)</h3>
           <div class="chart-wrap"><canvas id="chart-counts"></canvas></div>
         </div>
         <div class="chart-card">
-          <h3>Success Rate (%)</h3>
+          <h3>Tasa de Éxito (%)</h3>
           <div class="chart-wrap"><canvas id="chart-success"></canvas></div>
         </div>
       </div>
@@ -557,27 +557,27 @@
 
     <!-- ============== HISTORY ============== -->
     <div class="panel history-panel">
-      <div class="panel-title">Execution History</div>
+      <div class="panel-title">Historial de Ejecuciones</div>
       <div class="filters">
-        <label for="filter-status">Status:</label>
+        <label for="filter-status">Estado:</label>
         <select id="filter-status">
-          <option value="">All</option>
-          <option value="success">Success</option>
-          <option value="warning">Warning</option>
+          <option value="">Todos</option>
+          <option value="success">Éxito</option>
+          <option value="warning">Advertencia</option>
           <option value="error">Error</option>
         </select>
-        <label for="filter-from">From:</label>
+        <label for="filter-from">Desde:</label>
         <input type="date" id="filter-from" />
-        <label for="filter-to">To:</label>
+        <label for="filter-to">Hasta:</label>
         <input type="date" id="filter-to" />
-        <button class="refresh-btn" id="history-apply">Apply</button>
+        <button class="refresh-btn" id="history-apply">Filtrar</button>
       </div>
-      <div id="history-content" class="loading">Loading…</div>
+      <div id="history-content" class="loading">Cargando…</div>
       <div class="pagination" id="history-pagination" style="display:none">
         <span id="pagination-info"></span>
         <div class="pagination-buttons">
-          <button class="refresh-btn" id="page-prev">‹ Prev</button>
-          <button class="refresh-btn" id="page-next">Next ›</button>
+          <button class="refresh-btn" id="page-prev">‹ Anterior</button>
+          <button class="refresh-btn" id="page-next">Siguiente ›</button>
         </div>
       </div>
     </div>
@@ -587,8 +587,8 @@
   <div class="modal-overlay" id="execution-modal">
     <div class="modal">
       <div class="modal-header">
-        <h2>Execution Detail</h2>
-        <button class="modal-close" id="modal-close" aria-label="Close">×</button>
+        <h2>Detalle de Ejecución</h2>
+        <button class="modal-close" id="modal-close" aria-label="Cerrar">×</button>
       </div>
       <div class="modal-body" id="modal-body">
         <div class="loading">Loading…</div>
@@ -635,12 +635,20 @@
         .replace(/"/g, '&quot;')
         .replace(/'/g, '&#039;');
     }
+    function transStatus(s) {
+      const map = { success: 'Éxito', warning: 'Advertencia', error: 'Error', idle: 'Inactivo', running: 'Ejecutando', stopped: 'Detenido' };
+      return map[s] || s;
+    }
+    function transSeverity(s) {
+      const map = { critical: 'Crítico', warning: 'Advertencia', info: 'Informativo' };
+      return map[s] || s;
+    }
     function setOffline(offline) {
       document.getElementById('offline-banner').classList.toggle('visible', offline);
     }
     function setLastUpdated() {
       document.getElementById('last-updated').textContent =
-        'Last updated: ' + new Date().toLocaleTimeString();
+        'Última actualización: ' + new Date().toLocaleTimeString();
     }
 
     // ============================================
@@ -668,42 +676,42 @@
 
       container.innerHTML = `
         <div class="stat-card">
-          <span class="stat-label">Scraper Status</span>
-          <span class="stat-value"><span class="badge ${statusClass}">${escapeHtml(data.scraperStatus || 'idle')}</span></span>
-          <span class="stat-sub">${data.lastExecutionTimeAgo ? 'Last run: ' + escapeHtml(data.lastExecutionTimeAgo) : 'No runs yet'}</span>
+          <span class="stat-label">Estado del Scraper</span>
+          <span class="stat-value"><span class="badge ${statusClass}">${escapeHtml(transStatus(data.scraperStatus || 'idle'))}</span></span>
+          <span class="stat-sub">${data.lastExecutionTimeAgo ? 'Última ejec: ' + escapeHtml(data.lastExecutionTimeAgo) : 'Sin ejecuciones'}</span>
         </div>
         <div class="stat-card">
-          <span class="stat-label">Last Execution</span>
+          <span class="stat-label">Última Ejecución</span>
           <span class="stat-value">${lastExec ? fmtDuration(lastExec.durationMs) : '—'}</span>
           <span class="stat-sub">${lastExec ? fmtDate(lastExec.startedAt) : '—'}</span>
         </div>
         <div class="stat-card">
-          <span class="stat-label">Success Rate (7d)</span>
+          <span class="stat-label">Tasa de Éxito (7d)</span>
           <span class="stat-value">${data.successRateLast7Days ?? 0}%</span>
-          <span class="stat-sub">7-day rolling</span>
+          <span class="stat-sub">Promedio últimos 7 días</span>
         </div>
         <div class="stat-card">
-          <span class="stat-label">Errors (24h)</span>
+          <span class="stat-label">Errores (24h)</span>
           <span class="stat-value" style="color: ${(data.errorsLast24h || 0) > 0 ? 'var(--error)' : 'var(--text-bright)'}">${data.errorsLast24h ?? 0}</span>
-          <span class="stat-sub">Last 24 hours</span>
+          <span class="stat-sub">Últimas 24 horas</span>
         </div>
         <div class="stat-card">
-          <span class="stat-label">Avg Duration (7d)</span>
+          <span class="stat-label">Duración Promedio (7d)</span>
           <span class="stat-value">${fmtDuration(data.avgDurationLast7Days)}</span>
-          <span class="stat-sub">7-day average</span>
+          <span class="stat-sub">Promedio últimos 7 días</span>
         </div>
         <div class="stat-card">
-          <span class="stat-label">Products Found (7d)</span>
+          <span class="stat-label">Productos Encontrados (7d)</span>
           <span class="stat-value">${(data.totalProductsFound ?? 0).toLocaleString()}</span>
-          <span class="stat-sub">Across all categories</span>
+          <span class="stat-sub">En todas las categorías</span>
         </div>
         <div class="stat-card">
-          <span class="stat-label">Products Updated (7d)</span>
+          <span class="stat-label">Productos Actualizados (7d)</span>
           <span class="stat-value">${(data.totalProductsUpdated ?? 0).toLocaleString()}</span>
-          <span class="stat-sub">Across all categories</span>
+          <span class="stat-sub">En todas las categorías</span>
         </div>
         <div class="stat-card">
-          <span class="stat-label">Last Trigger</span>
+          <span class="stat-label">Último Disparador</span>
           <span class="stat-value">${lastExec ? escapeHtml(lastExec.triggerSource || '—') : '—'}</span>
           <span class="stat-sub">cron / http / manual</span>
         </div>
@@ -718,7 +726,7 @@
       const container = document.getElementById('health-content');
 
       if (!data.alerts || data.alerts.length === 0) {
-        container.innerHTML = '<div class="health-empty">No active alerts — scraper is healthy.</div>';
+        container.innerHTML = '<div class="health-empty">Sin alertas activas — el scraper está saludable.</div>';
         return;
       }
 
@@ -732,7 +740,7 @@
             <div class="health-item-body">
               <div class="health-item-message">${escapeHtml(a.message || '')}</div>
               <div class="health-item-meta">
-                <span class="badge badge-${escapeHtml(sev)}">${escapeHtml(sev)}</span>
+                <span class="badge badge-${escapeHtml(sev)}">${escapeHtml(transSeverity(sev))}</span>
                 &nbsp;<code>${escapeHtml(type)}</code>
                 &nbsp;·&nbsp; ${escapeHtml(detected)}
               </div>
@@ -765,7 +773,7 @@
       historyTotal = data.pagination?.total ?? 0;
 
       if (!data.data || data.data.length === 0) {
-        container.innerHTML = '<div class="empty-state">No executions match the current filters.</div>';
+        container.innerHTML = '<div class="empty-state">No hay ejecuciones que coincidan con los filtros.</div>';
         pagination.style.display = 'none';
         return;
       }
@@ -774,13 +782,13 @@
         <table class="history-table">
           <thead>
             <tr>
-              <th data-sort="startedAt" class="sort-desc">Started</th>
-              <th data-sort="durationMs">Duration</th>
-              <th data-sort="status">Status</th>
-              <th class="col-products">Products</th>
-              <th class="col-errors">Errors</th>
-              <th>Trigger</th>
-              <th class="actions">Actions</th>
+              <th data-sort="startedAt" class="sort-desc">Inicio</th>
+              <th data-sort="durationMs">Duración</th>
+              <th data-sort="status">Estado</th>
+              <th class="col-products">Productos</th>
+              <th class="col-errors">Errores</th>
+              <th>Origen</th>
+              <th class="actions">Acciones</th>
             </tr>
           </thead>
           <tbody>
@@ -788,11 +796,11 @@
               <tr>
                 <td>${escapeHtml(fmtDate(e.startedAt))}</td>
                 <td>${escapeHtml(fmtDuration(e.durationMs))}</td>
-                <td><span class="badge badge-${escapeHtml(e.status)}">${escapeHtml(e.status)}</span></td>
+                <td><span class="badge badge-${escapeHtml(e.status)}">${escapeHtml(transStatus(e.status))}</span></td>
                 <td class="col-products">${(e.productsFound ?? 0).toLocaleString()}</td>
                 <td class="col-errors">${e.errorCount ?? 0}</td>
                 <td>${escapeHtml(e.triggerSource || '—')}</td>
-                <td class="actions"><a href="#" data-exec-id="${escapeHtml(e._id)}">View</a></td>
+                <td class="actions"><a href="#" data-exec-id="${escapeHtml(e._id)}">Ver</a></td>
               </tr>
             `).join('')}
           </tbody>
@@ -813,8 +821,8 @@
       const end = Math.min(historyPage * historyLimit, historyTotal);
       document.getElementById('pagination-info').textContent =
         totalPages === 0
-          ? 'No results'
-          : `Showing ${start}–${end} of ${historyTotal} (page ${historyPage} of ${totalPages})`;
+          ? 'Sin resultados'
+          : `Mostrando ${start}–${end} de ${historyTotal} (pág. ${historyPage} de ${totalPages})`;
       pagination.style.display = 'flex';
       document.getElementById('page-prev').disabled = historyPage <= 1;
       document.getElementById('page-next').disabled = historyPage >= totalPages;
@@ -826,7 +834,7 @@
     async function openExecutionDetail(id) {
       const modal = document.getElementById('execution-modal');
       const body = document.getElementById('modal-body');
-      body.innerHTML = '<div class="loading">Loading…</div>';
+      body.innerHTML = '<div class="loading">Cargando…</div>';
       modal.classList.add('open');
 
       try {
@@ -837,30 +845,30 @@
 
         body.innerHTML = `
           <div class="detail-grid">
-            <div class="detail-row"><span class="label">Status</span><span class="value"><span class="badge ${statusClass}">${escapeHtml(e.status || '—')}</span></span></div>
-            <div class="detail-row"><span class="label">Trigger</span><span class="value">${escapeHtml(e.triggerSource || '—')}</span></div>
-            <div class="detail-row"><span class="label">Started</span><span class="value">${escapeHtml(fmtDate(e.startedAt))}</span></div>
-            <div class="detail-row"><span class="label">Completed</span><span class="value">${escapeHtml(fmtDate(e.completedAt))}</span></div>
-            <div class="detail-row"><span class="label">Duration</span><span class="value">${escapeHtml(fmtDuration(e.durationMs))}</span></div>
-            <div class="detail-row"><span class="label">Duration Category</span><span class="value">${escapeHtml(e.metadata?.durationCategory || '—')}</span></div>
-            <div class="detail-row"><span class="label">Products Found</span><span class="value">${(e.productsFound ?? 0).toLocaleString()}</span></div>
-            <div class="detail-row"><span class="label">Products Created</span><span class="value">${(e.productsCreated ?? 0).toLocaleString()}</span></div>
-            <div class="detail-row"><span class="label">Products Updated</span><span class="value">${(e.productsUpdated ?? 0).toLocaleString()}</span></div>
-            <div class="detail-row"><span class="label">Products Unavailable</span><span class="value">${(e.productsUnavailable ?? 0).toLocaleString()}</span></div>
-            <div class="detail-row"><span class="label">Error Count</span><span class="value">${e.errorCount ?? 0}</span></div>
-            <div class="detail-row"><span class="label">Categories Scraped</span><span class="value">${(e.categoriesScraped || []).length}</span></div>
-            <div class="detail-row" style="grid-column: 1 / -1"><span class="label">Execution ID</span><span class="value"><code>${escapeHtml(e._id)}</code></span></div>
+            <div class="detail-row"><span class="label">Estado</span><span class="value"><span class="badge ${statusClass}">${escapeHtml(transStatus(e.status || '—'))}</span></span></div>
+            <div class="detail-row"><span class="label">Origen</span><span class="value">${escapeHtml(e.triggerSource || '—')}</span></div>
+            <div class="detail-row"><span class="label">Inicio</span><span class="value">${escapeHtml(fmtDate(e.startedAt))}</span></div>
+            <div class="detail-row"><span class="label">Fin</span><span class="value">${escapeHtml(fmtDate(e.completedAt))}</span></div>
+            <div class="detail-row"><span class="label">Duración</span><span class="value">${escapeHtml(fmtDuration(e.durationMs))}</span></div>
+            <div class="detail-row"><span class="label">Categoría de Duración</span><span class="value">${escapeHtml(e.metadata?.durationCategory || '—')}</span></div>
+            <div class="detail-row"><span class="label">Productos Encontrados</span><span class="value">${(e.productsFound ?? 0).toLocaleString()}</span></div>
+            <div class="detail-row"><span class="label">Productos Creados</span><span class="value">${(e.productsCreated ?? 0).toLocaleString()}</span></div>
+            <div class="detail-row"><span class="label">Productos Actualizados</span><span class="value">${(e.productsUpdated ?? 0).toLocaleString()}</span></div>
+            <div class="detail-row"><span class="label">Productos No Disponibles</span><span class="value">${(e.productsUnavailable ?? 0).toLocaleString()}</span></div>
+            <div class="detail-row"><span class="label">Cantidad de Errores</span><span class="value">${e.errorCount ?? 0}</span></div>
+            <div class="detail-row"><span class="label">Categorías Scrapeadas</span><span class="value">${(e.categoriesScraped || []).length}</span></div>
+            <div class="detail-row" style="grid-column: 1 / -1"><span class="label">ID de Ejecución</span><span class="value"><code>${escapeHtml(e._id)}</code></span></div>
           </div>
 
           ${errors.length > 0 ? `
-            <div class="section-title">Errors (${errors.length})</div>
+            <div class="section-title">Errores (${errors.length})</div>
             <ul class="errors-list">
               ${errors.map(err => `<li>${escapeHtml(err)}</li>`).join('')}
             </ul>
           ` : ''}
 
-          <div class="section-title">Log Stream (${logs.length} lines)</div>
-          <div class="log-stream">${logs.length === 0 ? '— no log output captured —' : logs.map(line => {
+          <div class="section-title">Registro de Actividad (${logs.length} líneas)</div>
+          <div class="log-stream">${logs.length === 0 ? '— sin registros capturados —' : logs.map(line => {
             let cls = 'log-line';
             if (line.includes('ERROR')) cls += ' log-error';
             else if (line.includes('WARN')) cls += ' log-warn';
@@ -868,7 +876,7 @@
           }).join('')}</div>
         `;
       } catch (err) {
-        body.innerHTML = `<div class="empty-state">Failed to load execution: ${escapeHtml(err.message)}</div>`;
+        body.innerHTML = `<div class="empty-state">Error al cargar la ejecución: ${escapeHtml(err.message)}</div>`;
       }
     }
 
@@ -923,7 +931,7 @@
         data: {
           labels,
           datasets: [{
-            label: 'Products Found',
+            label: 'Productos Encontrados',
             data: productsFound,
             borderColor: '#58a6ff',
             backgroundColor: 'rgba(88, 166, 255, 0.1)',
@@ -941,7 +949,7 @@
         data: {
           labels,
           datasets: [{
-            label: 'Avg Duration (ms)',
+            label: 'Duración Promedio (ms)',
             data: avgDuration,
             borderColor: '#d29922',
             backgroundColor: 'rgba(210, 153, 34, 0.1)',
@@ -959,8 +967,8 @@
         data: {
           labels,
           datasets: [
-            { label: 'Success', data: success, backgroundColor: 'rgba(63, 185, 80, 0.7)' },
-            { label: 'Warning', data: warning, backgroundColor: 'rgba(210, 153, 34, 0.7)' },
+            { label: 'Éxito', data: success, backgroundColor: 'rgba(63, 185, 80, 0.7)' },
+            { label: 'Advertencia', data: warning, backgroundColor: 'rgba(210, 153, 34, 0.7)' },
             { label: 'Error',   data: error,   backgroundColor: 'rgba(248, 81, 73, 0.7)' },
           ],
         },
@@ -980,7 +988,7 @@
         data: {
           labels,
           datasets: [{
-            label: 'Success Rate %',
+            label: 'Tasa de Éxito %',
             data: successRate,
             backgroundColor: successRate.map(v =>
               v >= 90 ? 'rgba(63, 185, 80, 0.7)' :
@@ -997,6 +1005,56 @@
           },
         },
       });
+    }
+
+    // ============================================
+    // SSE — real-time health alerts (R3.5)
+    // ============================================
+    let sseConnected = false;
+
+    function connectSSE() {
+      const source = new EventSource(API_BASE + '/events');
+
+      source.addEventListener('open', () => {
+        sseConnected = true;
+        console.log('[SSE] Connected');
+      });
+
+      source.addEventListener('health-alert', (e) => {
+        try {
+          const alert = JSON.parse(e.data);
+          console.log('[SSE] health-alert:', alert.checkType, alert.severity);
+
+          // Re-fetch health panel to show the new alert
+          loadHealth().catch(() => {});
+
+          // Show browser notification for critical alerts
+          if (alert.severity === 'critical' && 'Notification' in window) {
+            if (Notification.permission === 'granted') {
+              new Notification('🔴 Alerta Crítica — Scraper', {
+                body: alert.message,
+                tag: 'health-alert-' + (alert.detectedAt || Date.now()),
+              });
+            } else if (Notification.permission !== 'denied') {
+              Notification.requestPermission();
+            }
+          }
+
+          // Also bump the overview (status badge + 7-day stats)
+          loadOverview().catch(() => {});
+        } catch (err) {
+          console.error('[SSE] Failed to parse health-alert:', err);
+        }
+      });
+
+      source.addEventListener('heartbeat', () => {
+        // Keepalive — no action needed
+      });
+
+      source.onerror = () => {
+        sseConnected = false;
+        console.warn('[SSE] Disconnected — will auto-reconnect');
+      };
     }
 
     // ============================================
@@ -1071,6 +1129,7 @@
     // ============================================
     refreshAll();
     setInterval(pollStatus, POLL_INTERVAL_MS);
+    connectSSE();
   </script>
 </body>
 </html>

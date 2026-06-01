@@ -87,7 +87,7 @@ const productRepository = {
             return { created: false, updated: false };
         }
         else {
-            await collection.insertOne({ ...product, supplier: 'jotakp', status: 'active', createdAt: new Date(), updatedAt: new Date() });
+            await collection.insertOne({ ...product, supplier: 'jotakp', status: 'active', inStock: true, createdAt: new Date(), updatedAt: new Date() });
             return { created: true, updated: false };
         }
     },
@@ -97,7 +97,7 @@ const productRepository = {
         const now = new Date();
         const existing = await collection.findOne({ externalId: product.externalId, supplier: product.supplier || 'jotakp' });
         if (!existing) {
-            await collection.insertOne({ ...product, supplier: product.supplier || 'jotakp', status: 'active', lastSyncedAt: now, createdAt: now, updatedAt: now });
+            await collection.insertOne({ ...product, supplier: product.supplier || 'jotakp', status: 'active', inStock: true, lastSyncedAt: now, createdAt: now, updatedAt: now });
             return { created: true, updated: false, changes: ['CREATE'] };
         }
         const changes = [];
@@ -107,6 +107,11 @@ const productRepository = {
             updateOps.status = 'active';
             updateOps.discontinuedAt = null;
             changes.push('status');
+        }
+        // If product was out of stock but is now found again, mark as in stock
+        if (existing.inStock === false) {
+            updateOps.inStock = true;
+            changes.push('inStock');
         }
         const fieldsToCompare = ['name', 'description', 'price', 'priceRaw', 'currency', 'stock', 'sku', 'categories', 'imageUrls'];
         for (const field of fieldsToCompare) {
@@ -125,7 +130,7 @@ const productRepository = {
     },
     async markDiscontinued(supplier, scrapedIds) {
         const db = await getDb();
-        const result = await db.collection('products').updateMany({ supplier, externalId: { $nin: scrapedIds }, status: 'active' }, { $set: { status: 'discontinued', discontinuedAt: new Date() } });
+        const result = await db.collection('products').updateMany({ supplier, externalId: { $nin: scrapedIds }, status: 'active', inStock: true }, { $set: { inStock: false } });
         return result.modifiedCount;
     },
     async ensureIndexes() {
@@ -158,7 +163,7 @@ const productRepository = {
                 // Insert nuevo
                 operations.push({
                     insertOne: {
-                        document: { ...product, supplier: 'jotakp', status: 'active', lastSyncedAt: now, createdAt: now, updatedAt: now }
+                        document: { ...product, supplier: 'jotakp', status: 'active', inStock: true, lastSyncedAt: now, createdAt: now, updatedAt: now }
                     }
                 });
                 created++;
@@ -1296,15 +1301,15 @@ class ScraperService {
                         const result = await productsCollection.updateMany({
                             supplier: this.config.supplier,
                             externalId: { $in: disappearedIds },
-                            categories: categoryId
+                            categories: categoryId,
+                            inStock: true
                         }, {
                             $set: {
-                                status: "discontinued",
-                                discontinuedAt: new Date()
+                                inStock: false
                             }
                         });
                         discontinuedCount = result.modifiedCount;
-                        console.log(`[Scraper] Marked ${discontinuedCount} products as discontinued in ${categoryId}`);
+                        console.log(`[Scraper] Marked ${discontinuedCount} products as out of stock in ${categoryId}`);
                     }
                 }
             }
@@ -1317,7 +1322,8 @@ class ScraperService {
                 const existingProducts = await productsCollection.find({
                     supplier: this.config.supplier,
                     categories: categoryId,
-                    status: "active"
+                    status: "active",
+                    inStock: true
                 }).toArray();
                 const existingIds = existingProducts.map(p => p.externalId);
                 const scrapedIds = seenExternalIds;
@@ -1329,12 +1335,11 @@ class ScraperService {
                         categories: categoryId
                     }, {
                         $set: {
-                            status: "discontinued",
-                            discontinuedAt: new Date()
+                            inStock: false
                         }
                     });
                     discontinuedCount = result.modifiedCount;
-                    console.log(`[Scraper] Marked ${discontinuedCount} products as discontinued in ${categoryId}`);
+                    console.log(`[Scraper] Marked ${discontinuedCount} products as out of stock in ${categoryId}`);
                 }
             }
             else if (this.request.categoryId === undefined) {
