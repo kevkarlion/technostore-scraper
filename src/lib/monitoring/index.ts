@@ -1,8 +1,7 @@
 // Public surface of the monitoring module.
 // Health-checker and metrics-aggregator land in PR 2 (Phase 2 tasks 2.3 / 2.4).
-// The execution recorder is added in the next commit; the barrel re-export
-// is updated in the same commit so the recorder is importable by then.
 
+export { createExecutionRecorder } from './execution-recorder';
 export * from './types';
 
 import type { MonitoringConfig } from './types';

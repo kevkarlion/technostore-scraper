@@ -20,7 +20,7 @@ export interface ExecutionLog {
   metadata?: {
     commitSha?: string;
     environment?: string;
-    durationCategory?: 'fast' | 'normal' | 'slow';
+    durationCategory?: 'fast' | 'normal' | 'slow' | 'error';
   };
 }
 
