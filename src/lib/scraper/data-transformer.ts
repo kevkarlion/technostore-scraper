@@ -95,6 +95,7 @@ export interface ScrapedProductDTO {
   categories: string[];
   attributes: unknown[];
   rawData?: unknown;
+  inStock: boolean;
 }
 
 /**
@@ -131,6 +132,7 @@ export function transformProduct(raw: RawProduct, supplier: string): ScrapedProd
     categories: raw.categories,
     attributes: [],
     rawData: raw.rawElement ? { rawElement: "Available" } : undefined,
+    inStock: true,
   };
 
   console.log(`[Transform] Output priceRaw: ${scrapedProduct.priceRaw}`);

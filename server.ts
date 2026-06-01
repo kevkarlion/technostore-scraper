@@ -39,6 +39,7 @@ function formatArgentinaDate(date: Date | string): string {
 
 // Import new scraper modules (use alias to avoid conflict)
 import { runScraper, runIncrementalScraper as runIncrementalScraperNew, jotakpCategories } from './src/lib/scraper/index';
+import { initMonitoring, createExecutionRecorder } from './src/lib/monitoring';
 
 // CONFIG - with defaults and logging
 const SUPPLIER_URL = process.env.SUPPLIER_URL || 'https://jotakp.dyndns.org';
@@ -140,6 +141,22 @@ process.on('SIGTERM', async () => {
   await closeMongoConnection();
   process.exit(0);
 });
+
+// Initialize monitoring module.
+// Sidecar pattern: runs in the background after Mongo is reachable.
+// Failures here are logged but never block server boot — the scraper
+// must work even if monitoring indexes fail to create.
+let executionRecorder: any = null;
+(async () => {
+  try {
+    const database = await getDb();
+    await initMonitoring({ db: database });
+    executionRecorder = createExecutionRecorder({ db: database });
+    console.log('[Monitoring] Initialized');
+  } catch (e) {
+    console.error('[Monitoring] Init error:', e);
+  }
+})();
 
 function generateContentHash(content: string): string {
   return crypto.createHash('md5').update(content).digest('hex');
@@ -333,6 +350,7 @@ async function saveProductsBatch(products: any[], categoryId: string) {
           document: {
             ...baseUpdate,
             status: 'active',
+            inStock: true,
             currency: 'USD',
             attributes: [],
             createdAt: now,
@@ -365,8 +383,8 @@ async function saveProduct(product: any, categoryId: string) {
 async function markDiscontinued(categoryId: string, scrapedIds: string[]) {
   const database = await getDb();
   const result = await database.collection('products').updateMany(
-    { categories: categoryId, supplier: 'jotakp', externalId: { $nin: scrapedIds } },
-    { $set: { status: 'discontinued', discontinuedAt: new Date() } }
+    { categories: categoryId, supplier: 'jotakp', externalId: { $nin: scrapedIds }, inStock: true },
+    { $set: { inStock: false } }
   );
   return result.modifiedCount;
 }
@@ -553,7 +571,19 @@ app.post('/scraper/incremental', async (req, res) => {
     try {
       console.log(`[Incremental] Attempt ${attempt}/3...`);
       const { forceFullScrape } = req.body;
-      const result = await runIncrementalScraperNew(forceFullScrape);
+      const { result, executionId } = await executionRecorder.recordExecution(
+        'http',
+        () => runIncrementalScraperNew(forceFullScrape),
+        {
+          extractStats: (r: any) => ({
+            productsFound: (r.scrapeResult?.created || 0) + (r.scrapeResult?.updated || 0),
+            productsCreated: r.scrapeResult?.created || 0,
+            productsUpdated: r.scrapeResult?.updated || 0,
+            productsUnavailable: 0,
+            errors: r.scrapeResult?.errors || [],
+          }),
+        }
+      );
       return res.json(result);
     } catch (error) {
       console.error(`[Incremental] Attempt ${attempt} failed:`, error.message);
@@ -617,7 +647,19 @@ app.listen(PORT, () => {
       console.log('[Cron] Running scheduled incremental scrape...');
       const startTime = Date.now();
       try {
-        const result = await runIncrementalScraperNew(false);
+        const { result, executionId } = await executionRecorder.recordExecution(
+          'cron',
+          () => runIncrementalScraperNew(false),
+          {
+            extractStats: (r: any) => ({
+              productsFound: (r.scrapeResult?.created || 0) + (r.scrapeResult?.updated || 0),
+              productsCreated: r.scrapeResult?.created || 0,
+              productsUpdated: r.scrapeResult?.updated || 0,
+              productsUnavailable: 0,
+              errors: r.scrapeResult?.errors || [],
+            }),
+          }
+        );
         const duration = Math.round((Date.now() - startTime) / 1000);
         console.log(`[Cron] Completed in ${duration}s - Created: ${result.scrapeResult?.created}, Updated: ${result.scrapeResult?.updated}`);
       } catch (error) {
