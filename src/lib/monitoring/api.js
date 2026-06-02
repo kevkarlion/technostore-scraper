@@ -11,10 +11,11 @@
 //   GET  /metrics       — pre-aggregated snapshots + summary (R2.4)
 //   GET  /health        — active health alerts (R2.5)
 //   POST /health/check  — manually trigger the scraper-stopped check
+//   GET  /events        — SSE stream for real-time health alerts (R3.5)
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.createMonitoringRouter = createMonitoringRouter;
 const mongodb_1 = require("mongodb");
-function createMonitoringRouter(config, healthChecker, metricsAggregator) {
+function createMonitoringRouter(config, healthChecker, metricsAggregator, sseEmitter) {
     const router = require('express').Router();
     const db = config.db;
     const execCollection = db.collection(config.collectionNames?.executionLogs || 'execution_logs');
@@ -297,5 +298,43 @@ function createMonitoringRouter(config, healthChecker, metricsAggregator) {
             res.status(500).json({ error: 'Failed to run health check' });
         }
     });
+    /**
+     * GET /events — SSE stream for real-time health alerts (R3.5).
+     *
+     * The server pushes two event types:
+     *   health-alert  — a new anomaly was detected (critical / warning / info)
+     *   heartbeat     — keepalive every 30 s (event: "heartbeat", data: "ping")
+     *
+     * Clients (dashboard) subscribe via native EventSource. No polyfill needed.
+     */
+    if (sseEmitter) {
+        router.get('/events', (req, res) => {
+            // SSE headers per spec
+            res.writeHead(200, {
+                'Content-Type': 'text/event-stream',
+                'Cache-Control': 'no-cache',
+                Connection: 'keep-alive',
+                'X-Accel-Buffering': 'no', // Disable nginx buffering if proxied
+            });
+            // Send an initial comment to flush headers
+            res.write(':ok\n\n');
+            // Register client
+            sseEmitter.addClient(res);
+            // Heartbeat every 30 s to keep the connection alive
+            const heartbeat = setInterval(() => {
+                try {
+                    res.write('event: heartbeat\ndata: ping\n\n');
+                }
+                catch {
+                    clearInterval(heartbeat);
+                }
+            }, 30000);
+            // Cleanup on disconnect
+            req.on('close', () => {
+                clearInterval(heartbeat);
+                sseEmitter.removeClient(res);
+            });
+        });
+    }
     return router;
 }

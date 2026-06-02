@@ -17,7 +17,7 @@ var __exportStar = (this && this.__exportStar) || function(m, exports) {
     for (var p in m) if (p !== "default" && !Object.prototype.hasOwnProperty.call(exports, p)) __createBinding(exports, m, p);
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.createMetricsAggregator = exports.createHealthChecker = exports.createExecutionRecorder = void 0;
+exports.createSSEEmitter = exports.createMetricsAggregator = exports.createHealthChecker = exports.createExecutionRecorder = void 0;
 exports.initMonitoring = initMonitoring;
 var execution_recorder_1 = require("./execution-recorder");
 Object.defineProperty(exports, "createExecutionRecorder", { enumerable: true, get: function () { return execution_recorder_1.createExecutionRecorder; } });
@@ -25,6 +25,8 @@ var health_checker_1 = require("./health-checker");
 Object.defineProperty(exports, "createHealthChecker", { enumerable: true, get: function () { return health_checker_1.createHealthChecker; } });
 var metrics_aggregator_1 = require("./metrics-aggregator");
 Object.defineProperty(exports, "createMetricsAggregator", { enumerable: true, get: function () { return metrics_aggregator_1.createMetricsAggregator; } });
+var sse_emitter_1 = require("./sse-emitter");
+Object.defineProperty(exports, "createSSEEmitter", { enumerable: true, get: function () { return sse_emitter_1.createSSEEmitter; } });
 __exportStar(require("./types"), exports);
 /**
  * Create the three monitoring collections and their indexes.

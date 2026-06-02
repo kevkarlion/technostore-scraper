@@ -171,6 +171,7 @@ process.on('SIGTERM', async () => {
 let executionRecorder = null;
 let healthChecker = null;
 let metricsAggregator = null;
+let sseEmitter = null;
 let monitoringRouter = null;
 let metricsInterval = null;
 let scraperStoppedInterval = null;
@@ -181,6 +182,7 @@ let scraperStoppedInterval = null;
         executionRecorder = (0, monitoring_1.createExecutionRecorder)({ db: database });
         healthChecker = (0, monitoring_1.createHealthChecker)({ db: database });
         metricsAggregator = (0, monitoring_1.createMetricsAggregator)({ db: database });
+        sseEmitter = (0, monitoring_1.createSSEEmitter)();
         // Start periodic metrics aggregation (hourly). The handle is kept so
         // a future shutdown hook can clearInterval() cleanly.
         metricsInterval = metricsAggregator.startPeriodicAggregation(60 * 60 * 1000);
@@ -194,6 +196,10 @@ let scraperStoppedInterval = null;
                 const alert = await healthChecker.checkScraperStopped();
                 if (alert) {
                     console.warn('[Health] Scraper stopped alert:', alert.message);
+                    if (sseEmitter) {
+                        sseEmitter.broadcast('health-alert', alert);
+                        console.log(`[SSE] Broadcast health-alert: scraper-stopped (${alert.severity})`);
+                    }
                 }
             }
             catch (e) {
@@ -205,7 +211,7 @@ let scraperStoppedInterval = null;
         // comment near `const app = express()`), because `app` is declared
         // after this IIFE. Storing the router in a module-level let lets
         // the middleware closure resolve it at request time.
-        monitoringRouter = (0, api_1.createMonitoringRouter)({ db: database }, healthChecker, metricsAggregator);
+        monitoringRouter = (0, api_1.createMonitoringRouter)({ db: database }, healthChecker, metricsAggregator, sseEmitter);
         console.log('[Monitoring] API router built — ready at /api/monitoring');
         console.log('[Monitoring] Initialized');
     }
@@ -227,7 +233,19 @@ async function runPostExecutionHooks(executionId) {
             const execDoc = await database.collection('execution_logs').findOne({ _id: new mongodb_1.ObjectId(executionId) });
             if (execDoc) {
                 // checkAfterExecution never throws, but we still wrap to be safe.
-                await healthChecker.checkAfterExecution(execDoc);
+                const alerts = await healthChecker.checkAfterExecution(execDoc) || [];
+                // Broadcast detected alerts via SSE in real-time
+                if (alerts.length > 0 && sseEmitter) {
+                    for (const alert of alerts) {
+                        const payload = {
+                            ...alert,
+                            _id: alert._id?.toString?.() || undefined,
+                            executionId,
+                        };
+                        sseEmitter.broadcast('health-alert', payload);
+                        console.log(`[SSE] Broadcast health-alert: ${alert.checkType} (${alert.severity})`);
+                    }
+                }
             }
         }
         catch (e) {

@@ -1210,7 +1210,6 @@ class ScraperService {
             // Step 2: Navigate to products page and scrape
             console.log("[Scraper] Starting to scrape products...");
             const rawProducts = await this.scrapeProducts(page, validCategories);
-            result.errors.push(`Scraped ${rawProducts.length} raw products from website`);
             if (rawProducts.length === 0) {
                 result.success = true;
                 result.durationMs = Date.now() - startTime;
@@ -1352,7 +1351,6 @@ class ScraperService {
             }
             result.created = bulkCreated;
             result.updated = bulkUpdated;
-            result.errors.push(`Unchanged: ${bulkUnchanged}, Discontinued: ${discontinuedCount}`);
             // Mark run as completed
             if (this.currentRun) {
                 await scraperRunRepository.markCompleted(this.currentRun.runId, {
