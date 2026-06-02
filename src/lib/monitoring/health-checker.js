@@ -31,6 +31,16 @@ function createHealthChecker(config) {
     async function checkAfterExecution(newLog) {
         const detected = [];
         try {
+            // Resolve any pending 'scraper-stopped' alerts — any execution means
+            // the scraper is not stopped. We do this unconditionally so that even
+            // a warning/error run clears stale alerts, preventing the 30-min
+            // checkScraperStopped timer from accumulating duplicates.
+            try {
+                await healthCollection.updateMany({ checkType: 'scraper-stopped', resolvedAt: { $exists: false } }, { $set: { resolvedAt: new Date() } });
+            }
+            catch (e) {
+                console.error('[HealthChecker] Error resolving scraper-stopped alerts:', e);
+            }
             // Check 1: Consecutive failures (3+ errors in a row).
             // countDocuments with sort+limit returns the count of the most recent N
             // matching docs — perfect for "are the last 3 runs all errors?".
@@ -148,6 +158,11 @@ function createHealthChecker(config) {
             const threeHoursAgo = new Date(now.getTime() - 3 * 60 * 60 * 1000);
             const lastRun = await execCollection.findOne({}, { sort: { startedAt: -1 }, projection: { startedAt: 1 } });
             if (!lastRun || !lastRun.startedAt) {
+                // Skip if there's already an unresolved alert of this type to avoid
+                // accumulating duplicates on the 30-min timer (no execution yet).
+                const existing = await healthCollection.findOne({ checkType: 'scraper-stopped', resolvedAt: { $exists: false } }, { sort: { detectedAt: -1 } });
+                if (existing)
+                    return null;
                 return {
                     detectedAt: now,
                     checkType: 'scraper-stopped',
@@ -157,6 +172,15 @@ function createHealthChecker(config) {
                 };
             }
             if (lastRun.startedAt < threeHoursAgo) {
+                // Skip if there's already an unresolved alert for this condition
+                // to avoid accumulating duplicates (timer runs every 30 min).
+                const existing = await healthCollection.findOne({ checkType: 'scraper-stopped', resolvedAt: { $exists: false } }, { sort: { detectedAt: -1 } });
+                if (existing) {
+                    // Still refresh the detectedAt so the dashboard shows the most
+                    // recent check time without creating a new document.
+                    await healthCollection.updateOne({ _id: existing._id }, { $set: { detectedAt: now } });
+                    return null;
+                }
                 return {
                     detectedAt: now,
                     checkType: 'scraper-stopped',
