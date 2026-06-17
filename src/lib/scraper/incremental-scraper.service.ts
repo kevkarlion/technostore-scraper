@@ -220,6 +220,18 @@ export async function preCheckCategories(categories: { id: string; idsubrubro1: 
 
   console.log("[Scraper] Using chromium path:", chromiumPath || "default");
 
+  // Railway fix: kill orphan Chromium processes before launching a new one.
+  // After browser crashes + reconnects, orphaned Chromium processes accumulate
+  // in the OS process table, consuming memory and PIDs. Eventually the kernel
+  // returns EAGAIN on fork and the scraper becomes unrecoverable.
+  try {
+    const { execSync } = require("child_process");
+    execSync("pkill -f chromium 2>/dev/null; true", { stdio: "ignore" });
+    console.log("[Scraper] Cleaned orphan chromium processes");
+  } catch {
+    // pkill returns non-zero when no processes match — that's fine
+  }
+
   const browser = await chromium.launch({
     headless: true,
     args: [

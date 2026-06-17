@@ -749,7 +749,7 @@ app.listen(PORT, () => {
     // ===============================================
     // SCHEDULER - Argentina timezone (UTC-3)
     // ===============================================
-    const SCRAPER_SCHEDULE = process.env.SCRAPER_SCHEDULE || '0 6 * * *'; // Default: 6am Argentina
+    const SCRAPER_SCHEDULE = process.env.SCRAPER_SCHEDULE || '0 7,10,13,16,19,22 * * 1-6'; // Default: 6am Argentina
     const TIMEZONE = 'America/Argentina/Buenos_Aires';
     console.log(`[Cron] Schedule: ${SCRAPER_SCHEDULE} (${TIMEZONE})`);
     // Verificar que el schedule sea válido
@@ -786,7 +786,7 @@ app.listen(PORT, () => {
 // Endpoints para controlar el scheduler
 app.get('/scheduler/status', (req, res) => {
     res.json({
-        schedule: process.env.SCRAPER_SCHEDULE || '0 6 * * *',
+        schedule: process.env.SCRAPER_SCHEDULE || '0 7,10,13,16,19,22 * * 1-6',
         timezone: 'America/Argentina/Buenos_Aires',
         enabled: true
     });

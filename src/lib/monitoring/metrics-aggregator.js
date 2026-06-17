@@ -22,20 +22,41 @@ function createMetricsAggregator(config) {
     const execCollection = db.collection(config.collectionNames?.executionLogs || 'execution_logs');
     const metricsCollection = db.collection(config.collectionNames?.metricsSnapshots || 'metrics_snapshots');
     /**
-     * Aggregate today's metrics and upsert the snapshot.
-     * Returns the snapshot, or null on failure.
+     * Build a MetricsSnapshot from a MongoDB aggregation result row.
      */
-    async function aggregateToday() {
+    function buildSnapshot(dateStr, r) {
+        return {
+            date: dateStr,
+            totalRuns: r.totalRuns,
+            successCount: r.successCount,
+            warningCount: r.warningCount,
+            errorCount: r.errorCount,
+            avgDurationMs: Math.round(r.avgDurationMs || 0),
+            maxDurationMs: r.maxDurationMs || 0,
+            minDurationMs: r.minDurationMs || 0,
+            totalProductsFound: r.totalProductsFound,
+            totalProductsCreated: r.totalProductsCreated,
+            totalProductsUpdated: r.totalProductsUpdated,
+            totalProductsUnavailable: r.totalProductsUnavailable,
+            avgProductsFound: r.totalRuns > 0 ? Math.round(r.totalProductsFound / r.totalRuns) : 0,
+            avgProductsUpdated: r.totalRuns > 0 ? Math.round(r.totalProductsUpdated / r.totalRuns) : 0,
+        };
+    }
+    /**
+     * Aggregate metrics for a single calendar date (UTC) and upsert the
+     * snapshot. Idempotent — safe to call repeatedly.
+     */
+    async function aggregateDate(date) {
         try {
-            const today = new Date();
-            today.setUTCHours(0, 0, 0, 0);
-            const tomorrow = new Date(today);
-            tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
-            const dateStr = today.toISOString().split('T')[0]; // YYYY-MM-DD
+            const dayStart = new Date(date);
+            dayStart.setUTCHours(0, 0, 0, 0);
+            const dayEnd = new Date(dayStart);
+            dayEnd.setUTCDate(dayEnd.getUTCDate() + 1);
+            const dateStr = dayStart.toISOString().split('T')[0]; // YYYY-MM-DD
             const pipeline = [
                 {
                     $match: {
-                        startedAt: { $gte: today, $lt: tomorrow },
+                        startedAt: { $gte: dayStart, $lt: dayEnd },
                     },
                 },
                 {
@@ -56,10 +77,11 @@ function createMetricsAggregator(config) {
                 },
             ];
             const results = await execCollection.aggregate(pipeline).toArray();
-            // Empty day — write a zero snapshot so GET /metrics can still render
-            // the day on the trend chart instead of skipping it.
+            let snapshot;
             if (results.length === 0) {
-                const emptySnapshot = {
+                // Empty day — write a zero snapshot so GET /metrics can still render
+                // the day on the trend chart instead of skipping it.
+                snapshot = {
                     date: dateStr,
                     totalRuns: 0,
                     successCount: 0,
@@ -75,28 +97,35 @@ function createMetricsAggregator(config) {
                     avgProductsFound: 0,
                     avgProductsUpdated: 0,
                 };
-                await metricsCollection.updateOne({ date: dateStr }, { $set: emptySnapshot }, { upsert: true });
-                return emptySnapshot;
             }
-            const r = results[0];
-            const snapshot = {
-                date: dateStr,
-                totalRuns: r.totalRuns,
-                successCount: r.successCount,
-                warningCount: r.warningCount,
-                errorCount: r.errorCount,
-                avgDurationMs: Math.round(r.avgDurationMs || 0),
-                maxDurationMs: r.maxDurationMs || 0,
-                minDurationMs: r.minDurationMs || 0,
-                totalProductsFound: r.totalProductsFound,
-                totalProductsCreated: r.totalProductsCreated,
-                totalProductsUpdated: r.totalProductsUpdated,
-                totalProductsUnavailable: r.totalProductsUnavailable,
-                avgProductsFound: r.totalRuns > 0 ? Math.round(r.totalProductsFound / r.totalRuns) : 0,
-                avgProductsUpdated: r.totalRuns > 0 ? Math.round(r.totalProductsUpdated / r.totalRuns) : 0,
-            };
+            else {
+                snapshot = buildSnapshot(dateStr, results[0]);
+            }
             await metricsCollection.updateOne({ date: dateStr }, { $set: snapshot }, { upsert: true });
             return snapshot;
+        }
+        catch (e) {
+            console.error('[MetricsAggregator] Error aggregating', date.toISOString(), ':', e);
+            return null;
+        }
+    }
+    /**
+     * Aggregate TODAY's metrics and upsert the snapshot.
+     * Also re-aggregates yesterday to catch executions that started before
+     * midnight but completed after (e.g. 23:47 → 01:07 UTC).
+     */
+    async function aggregateToday() {
+        try {
+            const today = new Date();
+            // Aggregate today
+            const todaySnapshot = await aggregateDate(today);
+            // Also aggregate yesterday to handle the midnight-boundary case
+            // where an execution's startedAt falls on the previous UTC day but
+            // aggregateToday() was not called while that day was still "today".
+            const yesterday = new Date(today);
+            yesterday.setUTCDate(yesterday.getUTCDate() - 1);
+            await aggregateDate(yesterday).catch(e => console.error('[MetricsAggregator] Error aggregating yesterday:', e));
+            return todaySnapshot;
         }
         catch (e) {
             console.error('[MetricsAggregator] Error aggregating today:', e);
