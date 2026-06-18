@@ -121,7 +121,7 @@ async function preCheckCategories() {
     const client = (0, http_client_1.createHttpClient)(config);
     const categories = config_1.jotakpCategories.filter((c) => c.idsubrubro1 > 0);
     console.log(`[Incremental] Pre-checking ${categories.length} categories...`);
-    const MAX_PARALLEL = 2;
+    const MAX_PARALLEL = 4;
     for (let i = 0; i < categories.length; i += MAX_PARALLEL) {
         const batch = categories.slice(i, i + MAX_PARALLEL);
         console.log(`[Incremental] Batch ${Math.floor(i / MAX_PARALLEL) + 1}: ${batch.map((c) => c.name || c.id).join(', ')}`);
@@ -190,7 +190,7 @@ async function runIncrementalScraper(forceFullScrape = false) {
     const scrapeResults = { created: 0, updated: 0, errors: [], durationMs: 0 };
     const startTime = Date.now();
     const allCategoryIds = categories.map((c) => c.id);
-    const MAX_PARALLEL = 2;
+    const MAX_PARALLEL = 4;
     for (let i = 0; i < allCategoryIds.length; i += MAX_PARALLEL) {
         const batch = allCategoryIds.slice(i, i + MAX_PARALLEL);
         console.log(`[Incremental] Scraping batch ${Math.floor(i / MAX_PARALLEL) + 1}: ${batch.join(', ')}`);

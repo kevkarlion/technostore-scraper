@@ -61,7 +61,7 @@ const config_1 = require("./config");
 // DEFAULT CONFIG
 // ============================================================================
 const DEFAULT_TIMEOUT = 30000; // 30s
-const DEFAULT_DELAY_MS = 3000; // 3s between requests
+const DEFAULT_DELAY_MS = 500; // 500ms between requests
 const MAX_RETRIES = 3;
 const RETRY_DELAY_MS = 2000;
 // ============================================================================

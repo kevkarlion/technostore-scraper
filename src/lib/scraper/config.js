@@ -224,7 +224,7 @@ function getScraperConfig() {
         loginUrl: SUPPLIER_LOGIN_URL,
         email: SUPPLIER_EMAIL,
         password: SUPPLIER_PASSWORD,
-        delayMs: parseInt(process.env.SUPPLIER_DELAY_MS || "3000", 10),
+        delayMs: parseInt(process.env.SUPPLIER_DELAY_MS || "500", 10),
         selectors: defaultSelectors,
     };
 }

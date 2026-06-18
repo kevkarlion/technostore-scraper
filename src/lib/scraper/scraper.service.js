@@ -341,10 +341,9 @@ class ScraperService {
             const { products, hasMore } = await this.scrapeCategoryPage(idsubrubro1, pageNum);
             if (products.length === 0)
                 break;
-            // Get detail for each product
+            // Get detail for each product — safeGet() already has internal delay
             for (const product of products) {
                 try {
-                    await (0, http_client_1.delay)((0, http_client_1.getRequestDelay)());
                     await this.enrichProductDetail(product);
                     allProducts.push(product);
                     allIds.push(product.externalId);

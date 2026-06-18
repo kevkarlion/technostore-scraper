@@ -8,8 +8,11 @@ COPY package*.json ./
 # Install dependencies
 RUN npm install
 
-# Copy app files
+# Copy source files
 COPY . .
+
+# Compile TypeScript to JavaScript
+RUN npx tsc
 
 EXPOSE 3001
 

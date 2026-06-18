@@ -241,6 +241,25 @@ async function runPostExecutionHooks(executionId) {
         }
     }
 }
+// ===============================================
+// SCRAPER MUTEX — evita solapamiento entre runs
+// ===============================================
+let scraperRunning = false;
+/**
+ * Marca el scraper como "en ejecución" y devuelve handle para liberar.
+ * Si ya está corriendo, lanza 409 (HTTP) o skipea (cron).
+ */
+function tryAcquireScraper(source) {
+    if (scraperRunning) {
+        if (source === 'http')
+            throw Object.assign(new Error('Scraper is already running'), { statusCode: 409 });
+        console.log('[Mutex] Scraper already running — skipping cron tick');
+        return null; // cron: skip
+    }
+    scraperRunning = true;
+    console.log('[Mutex] Lock acquired');
+    return () => { scraperRunning = false; console.log('[Mutex] Lock released'); };
+}
 const app = (0, express_1.default)();
 const PORT = process.env.PORT || 3001;
 app.use(express_1.default.json());
@@ -270,8 +289,15 @@ app.get('/debug/mongo-test', async (req, res) => {
     }
 });
 app.post('/run', async (req, res) => {
+    let release = null;
     try {
+        release = tryAcquireScraper('http');
+        if (!release) {
+            res.status(409).json({ error: 'Scraper is already running' });
+            return;
+        }
         const forceFullScrape = req.query.force === 'true';
+        res.json({ success: true, message: 'Scrape started in background', startedAt: new Date().toISOString() });
         const { result, executionId } = await executionRecorder.recordExecution('http', () => (0, index_1.runIncrementalScraper)(forceFullScrape), {
             extractStats: (r) => ({
                 productsFound: (r.scrapeResult?.created || 0) + (r.scrapeResult?.updated || 0),
@@ -282,10 +308,16 @@ app.post('/run', async (req, res) => {
             }),
         });
         void runPostExecutionHooks(executionId);
-        res.json(result);
+        console.log(`[Scraper] Background run complete: ${result.scrapeResult?.created} created, ${result.scrapeResult?.updated} updated`);
     }
     catch (error) {
-        res.status(500).json({ success: false, error: String(error) });
+        if (!res.headersSent)
+            res.status(error.statusCode || 500).json({ error: error.message });
+        console.error('[Scraper] Background run failed:', error.message);
+    }
+    finally {
+        if (release)
+            release();
     }
 });
 app.get('/status', async (req, res) => {
@@ -314,28 +346,35 @@ app.get('/scraper/categories', (req, res) => {
     res.json({ categories });
 });
 app.post('/scraper/run', async (req, res) => {
-    // Run full scraper for specific category or all
-    // Add retry logic for cold starts
-    let lastError = null;
-    for (let attempt = 1; attempt <= 3; attempt++) {
-        try {
-            console.log(`[Scraper] Attempt ${attempt}/3...`);
-            const { categoryId, idsubrubro1, source } = req.body;
-            const result = await (0, index_1.runScraper)({ categoryId, idsubrubro1, source });
-            return res.json(result);
+    let release = null;
+    const categoryId = req.body.categoryId;
+    try {
+        release = tryAcquireScraper('http');
+        if (!release) {
+            res.status(409).json({ error: 'Scraper is already running' });
+            return;
         }
-        catch (error) {
-            console.error(`[Scraper] Attempt ${attempt} failed:`, error.message);
-            lastError = error;
-            if (attempt < 3) {
-                await new Promise(r => setTimeout(r, 5000));
-            }
-        }
+        const { idsubrubro1, source } = req.body;
+        res.json({ success: true, message: 'Scrape started in background', categoryId, startedAt: new Date().toISOString() });
+        console.log(`[Scraper] Background run for ${categoryId}...`);
+        const result = await (0, index_1.runScraper)({ categoryId, idsubrubro1, source });
+        console.log(`[Scraper] Background run for ${categoryId} complete: ${result.created} created, ${result.updated} updated`);
     }
-    res.status(500).json({ success: false, error: String(lastError) });
+    catch (error) {
+        if (!res.headersSent)
+            res.status(error.statusCode || 500).json({ error: error.message });
+        console.error(`[Scraper] Background run for ${categoryId} failed:`, error.message);
+    }
+    finally {
+        if (release)
+            release();
+    }
 });
 // Endpoint para testar UNA sola categoría
 app.post('/scraper/test-category', async (req, res) => {
+    const release = tryAcquireScraper('http');
+    if (!release)
+        return;
     try {
         const { categoryId } = req.body;
         if (!categoryId) {
@@ -351,39 +390,41 @@ app.post('/scraper/test-category', async (req, res) => {
         console.error("[Test] Error:", error.message);
         res.status(500).json({ success: false, error: String(error) });
     }
+    finally {
+        release();
+    }
 });
 app.post('/scraper/incremental', async (req, res) => {
-    // Run incremental scraper with pre-check (using new module)
-    // Add retry logic for cold starts
-    let lastError = null;
-    for (let attempt = 1; attempt <= 3; attempt++) {
-        try {
-            console.log(`[Incremental] Attempt ${attempt}/3...`);
-            const { forceFullScrape } = req.body;
-            const { result, executionId } = await executionRecorder.recordExecution('http', () => (0, index_1.runIncrementalScraper)(forceFullScrape), {
-                extractStats: (r) => ({
-                    productsFound: (r.scrapeResult?.created || 0) + (r.scrapeResult?.updated || 0),
-                    productsCreated: r.scrapeResult?.created || 0,
-                    productsUpdated: r.scrapeResult?.updated || 0,
-                    productsUnavailable: 0,
-                    errors: r.scrapeResult?.errors || [],
-                }),
-            });
-            // Fire-and-forget: health checks + today's metrics snapshot.
-            // Never awaited — the HTTP response must not wait on monitoring.
-            void runPostExecutionHooks(executionId);
-            return res.json(result);
+    let release = null;
+    try {
+        release = tryAcquireScraper('http');
+        if (!release) {
+            res.status(409).json({ error: 'Scraper is already running' });
+            return;
         }
-        catch (error) {
-            console.error(`[Incremental] Attempt ${attempt} failed:`, error.message);
-            lastError = error;
-            // Wait 5 seconds before retry
-            if (attempt < 3) {
-                await new Promise(r => setTimeout(r, 5000));
-            }
-        }
+        const { forceFullScrape } = req.body;
+        res.json({ success: true, message: 'Incremental scrape started in background', startedAt: new Date().toISOString() });
+        const { result, executionId } = await executionRecorder.recordExecution('http', () => (0, index_1.runIncrementalScraper)(forceFullScrape), {
+            extractStats: (r) => ({
+                productsFound: (r.scrapeResult?.created || 0) + (r.scrapeResult?.updated || 0),
+                productsCreated: r.scrapeResult?.created || 0,
+                productsUpdated: r.scrapeResult?.updated || 0,
+                productsUnavailable: 0,
+                errors: r.scrapeResult?.errors || [],
+            }),
+        });
+        void runPostExecutionHooks(executionId);
+        console.log(`[Incremental] Background run complete: ${result.scrapeResult?.created} created, ${result.scrapeResult?.updated} updated`);
     }
-    res.status(500).json({ success: false, error: String(lastError) });
+    catch (error) {
+        if (!res.headersSent)
+            res.status(error.statusCode || 500).json({ error: error.message });
+        console.error('[Incremental] Background run failed:', error.message);
+    }
+    finally {
+        if (release)
+            release();
+    }
 });
 // Debug endpoint to fix discontinued products
 app.post('/debug/fix-discontinued', async (req, res) => {
@@ -418,16 +459,24 @@ app.listen(PORT, () => {
     // ===============================================
     // SCHEDULER - Argentina timezone (UTC-3)
     // ===============================================
-    const SCRAPER_SCHEDULE = process.env.SCRAPER_SCHEDULE || '0 7,10,13,16,19,22 * * 1-6'; // Default: 6am Argentina
+    // Weekdays (Mon-Fri): every 4h from 7am to 19pm
+    // Saturday: every 4h from 7am to 15pm
+    // Sunday: no scrape
     const TIMEZONE = 'America/Argentina/Buenos_Aires';
-    console.log(`[Cron] Schedule: ${SCRAPER_SCHEDULE} (${TIMEZONE})`);
-    // Verificar que el schedule sea válido
-    if (!node_cron_1.default.validate(SCRAPER_SCHEDULE)) {
-        console.error('[Cron] Invalid schedule:', SCRAPER_SCHEDULE);
-    }
-    else {
-        node_cron_1.default.schedule(SCRAPER_SCHEDULE, async () => {
-            console.log('[Cron] Running scheduled incremental scrape...');
+    const schedules = [
+        { cron: '0 7,11,15,19 * * 1-5', label: 'weekdays (7-19h every 4h)' },
+        { cron: '0 7,11,15 * * 6', label: 'saturday (7-15h every 4h)' },
+    ];
+    for (const { cron: expr, label } of schedules) {
+        if (!node_cron_1.default.validate(expr)) {
+            console.error(`[Cron] Invalid schedule for ${label}: ${expr}`);
+            continue;
+        }
+        node_cron_1.default.schedule(expr, async () => {
+            const release = tryAcquireScraper('cron');
+            if (!release)
+                return;
+            console.log(`[Cron] Running scheduled incremental scrape (${label})...`);
             const startTime = Date.now();
             try {
                 const { result, executionId } = await executionRecorder.recordExecution('cron', () => (0, index_1.runIncrementalScraper)(false), {
@@ -439,23 +488,27 @@ app.listen(PORT, () => {
                         errors: r.scrapeResult?.errors || [],
                     }),
                 });
-                // Fire-and-forget: health checks + today's metrics snapshot.
-                // Never awaited — the cron tick must not block on monitoring.
                 void runPostExecutionHooks(executionId);
                 const duration = Math.round((Date.now() - startTime) / 1000);
-                console.log(`[Cron] Completed in ${duration}s - Created: ${result.scrapeResult?.created}, Updated: ${result.scrapeResult?.updated}`);
+                console.log(`[Cron] Completed in ${duration}s (${label}) - Created: ${result.scrapeResult?.created}, Updated: ${result.scrapeResult?.updated}`);
             }
             catch (error) {
                 console.error('[Cron] Error:', error);
             }
+            finally {
+                release();
+            }
         }, { timezone: TIMEZONE });
-        console.log('[Cron] Scheduler active');
+        console.log(`[Cron] Active: ${expr} (${label})`);
     }
 });
 // Endpoints para controlar el scheduler
 app.get('/scheduler/status', (req, res) => {
     res.json({
-        schedule: process.env.SCRAPER_SCHEDULE || '0 7,10,13,16,19,22 * * 1-6',
+        schedules: [
+            { cron: '0 7,11,15,19 * * 1-5', label: 'weekdays (7-19h every 4h)' },
+            { cron: '0 7,11,15 * * 6', label: 'saturday (7-15h every 4h)' },
+        ],
         timezone: 'America/Argentina/Buenos_Aires',
         enabled: true
     });
