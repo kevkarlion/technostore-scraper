@@ -22,7 +22,7 @@ import type { ScraperConfig } from './types';
 // ============================================================================
 
 const DEFAULT_TIMEOUT = 30_000;       // 30s
-const DEFAULT_DELAY_MS = 3_000;       // 3s between requests
+const DEFAULT_DELAY_MS = 500;       // 500ms between requests
 const MAX_RETRIES = 3;
 const RETRY_DELAY_MS = 2_000;
 

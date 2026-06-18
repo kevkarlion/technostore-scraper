@@ -101,7 +101,7 @@ export async function preCheckCategories(): Promise<{
 
   console.log(`[Incremental] Pre-checking ${categories.length} categories...`);
 
-  const MAX_PARALLEL = 2;
+  const MAX_PARALLEL = 4;
 
   for (let i = 0; i < categories.length; i += MAX_PARALLEL) {
     const batch = categories.slice(i, i + MAX_PARALLEL);
@@ -193,7 +193,7 @@ export async function runIncrementalScraper(forceFullScrape: boolean = false): P
   const startTime = Date.now();
 
   const allCategoryIds = categories.map((c) => c.id);
-  const MAX_PARALLEL = 2;
+  const MAX_PARALLEL = 4;
 
   for (let i = 0; i < allCategoryIds.length; i += MAX_PARALLEL) {
     const batch = allCategoryIds.slice(i, i + MAX_PARALLEL);

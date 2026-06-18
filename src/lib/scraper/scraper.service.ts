@@ -27,7 +27,7 @@ import type {
   ScraperCategory,
 } from './types';
 import { ScraperError } from './types';
-import { createHttpClient, safeGet, safePost, getRequestDelay, delay } from './http-client';
+import { createHttpClient, safeGet, safePost } from './http-client';
 import crypto from 'crypto';
 
 // ============================================================================
@@ -378,10 +378,9 @@ export class ScraperService {
 
       if (products.length === 0) break;
 
-      // Get detail for each product
+      // Get detail for each product — safeGet() already has internal delay
       for (const product of products) {
         try {
-          await delay(getRequestDelay());
           await this.enrichProductDetail(product);
           allProducts.push(product);
           allIds.push(product.externalId);
