@@ -482,6 +482,14 @@ async function markDiscontinued(categoryId: string, scrapedIds: string[]) {
 async function runIncrementalScraper(forceFullScrape: boolean = false) {
   console.log('[Incremental] Starting...');
   const chromiumPath = process.env.CHROMIUM_PATH || '/usr/bin/chromium';
+
+  // Railway fix: kill orphan Chromium processes before launching a new one.
+  try {
+    const { execSync } = require('child_process');
+    execSync('pkill -f chromium 2>/dev/null; true', { stdio: 'ignore' });
+    console.log('[Incremental] Cleaned orphan chromium processes');
+  } catch { /* pkill returns non-zero when no match — fine */ }
+
   const browser = await chromium.launch({ headless: true, executablePath: chromiumPath, args: ['--no-sandbox', '--disable-setuid-sandbox'] });
   const results = { created: 0, updated: 0, unchanged: 0, discontinued: 0 };
   

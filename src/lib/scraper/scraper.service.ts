@@ -501,6 +501,18 @@ export class ScraperService {
       if (this.browser) {
         try { await this.browser.close(); } catch { /* ignore */ }
       }
+
+      // Railway fix: kill orphan Chromium processes before launching a new one.
+      // After browser crashes + reconnects, orphaned Chromium processes accumulate
+      // in the OS process table, consuming memory and PIDs. Eventually the kernel
+      // returns EAGAIN on fork and the scraper becomes unrecoverable.
+      try {
+        const { execSync } = require("child_process");
+        execSync("pkill -f chromium 2>/dev/null; true", { stdio: "ignore" });
+        console.log("[Scraper] Cleaned orphan chromium processes");
+      } catch {
+        // pkill returns non-zero when no processes match — that's fine
+      }
       
       // Try to find or download chromium
       let chromiumPath: string | undefined;
