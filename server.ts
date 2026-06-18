@@ -444,19 +444,25 @@ app.listen(PORT, () => {
   // ===============================================
   // SCHEDULER - Argentina timezone (UTC-3)
   // ===============================================
-  const SCRAPER_SCHEDULE = process.env.SCRAPER_SCHEDULE || '0 7,10,13,16,19,22 * * 1-6'; // Default: 6am Argentina
+  // Weekdays (Mon-Fri): every 4h from 7am to 19pm
+  // Saturday: every 4h from 7am to 15pm
+  // Sunday: no scrape
   const TIMEZONE = 'America/Argentina/Buenos_Aires';
-  
-  console.log(`[Cron] Schedule: ${SCRAPER_SCHEDULE} (${TIMEZONE})`);
-  
-  // Verificar que el schedule sea válido
-  if (!cron.validate(SCRAPER_SCHEDULE)) {
-    console.error('[Cron] Invalid schedule:', SCRAPER_SCHEDULE);
-  } else {
-    cron.schedule(SCRAPER_SCHEDULE, async () => {
+
+  const schedules = [
+    { cron: '0 7,11,15,19 * * 1-5', label: 'weekdays (7-19h every 4h)' },
+    { cron: '0 7,11,15 * * 6', label: 'saturday (7-15h every 4h)' },
+  ];
+
+  for (const { cron: expr, label } of schedules) {
+    if (!cron.validate(expr)) {
+      console.error(`[Cron] Invalid schedule for ${label}: ${expr}`);
+      continue;
+    }
+    cron.schedule(expr, async () => {
       const release = tryAcquireScraper('cron');
-      if (!release) return; // scraper already running — skip this tick
-      console.log('[Cron] Running scheduled incremental scrape...');
+      if (!release) return;
+      console.log(`[Cron] Running scheduled incremental scrape (${label})...`);
       const startTime = Date.now();
       try {
         const { result, executionId } = await executionRecorder.recordExecution(
@@ -472,25 +478,26 @@ app.listen(PORT, () => {
             }),
           }
         );
-        // Fire-and-forget: health checks + today's metrics snapshot.
-        // Never awaited — the cron tick must not block on monitoring.
         void runPostExecutionHooks(executionId);
         const duration = Math.round((Date.now() - startTime) / 1000);
-        console.log(`[Cron] Completed in ${duration}s - Created: ${result.scrapeResult?.created}, Updated: ${result.scrapeResult?.updated}`);
+        console.log(`[Cron] Completed in ${duration}s (${label}) - Created: ${result.scrapeResult?.created}, Updated: ${result.scrapeResult?.updated}`);
       } catch (error) {
         console.error('[Cron] Error:', error);
       } finally {
         release();
       }
     }, { timezone: TIMEZONE });
-    console.log('[Cron] Scheduler active');
+    console.log(`[Cron] Active: ${expr} (${label})`);
   }
 });
 
 // Endpoints para controlar el scheduler
 app.get('/scheduler/status', (req, res) => {
   res.json({ 
-    schedule: process.env.SCRAPER_SCHEDULE || '0 7,10,13,16,19,22 * * 1-6',
+    schedules: [
+      { cron: '0 7,11,15,19 * * 1-5', label: 'weekdays (7-19h every 4h)' },
+      { cron: '0 7,11,15 * * 6', label: 'saturday (7-15h every 4h)' },
+    ],
     timezone: 'America/Argentina/Buenos_Aires',
     enabled: true 
   });
