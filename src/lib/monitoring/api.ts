@@ -16,6 +16,45 @@ import { ObjectId } from 'mongodb';
 import type { MonitoringConfig, DashboardStatus, ExecutionLog } from './types';
 import type { SSEEmitter } from './sse-emitter';
 
+const errorPatterns: [RegExp, string][] = [
+  [/EAGAIN/, 'System resources temporarily unavailable (EAGAIN)'],
+  [/ECONNREFUSED/, 'Connection refused by the server'],
+  [/ECONNRESET/, 'Connection was reset by the peer'],
+  [/ENOTFOUND/, 'DNS lookup failed — host not found'],
+  [/ETIMEDOUT/, 'Connection timed out'],
+  [/ENETUNREACH/, 'Network is unreachable'],
+  [/EPIPE/, 'Broken pipe — connection lost'],
+  [/ETIMEOUT/, 'Request timed out'],
+  [/socket hang up/, 'Socket connection was closed unexpectedly'],
+  [/read ETIMEDOUT/, 'Read operation timed out'],
+  [/connect ETIMEDOUT/, 'Connection attempt timed out'],
+  [/429/, 'Too many requests — rate limited'],
+  [/status code 5\d{2}/, 'Server error on the supplier side'],
+  [/status code 4(?!29)\d{2}/, 'Request was rejected by the supplier'],
+  [/MongoError|MongoServerError/, 'Database error'],
+  [/EACCES/, 'Permission denied'],
+  [/EADDRINUSE/, 'Address already in use'],
+  [/EHOSTUNREACH/, 'Host is unreachable'],
+];
+
+function humanReadableError(error: string): string {
+  for (const [pattern, message] of errorPatterns) {
+    if (pattern.test(error)) return message;
+  }
+  if (error.length > 120) return error.substring(0, 117) + '...';
+  return error;
+}
+
+async function lookupProductNames(db: any, externalIds: string[]): Promise<{ externalId: string; name: string }[]> {
+  if (!externalIds || externalIds.length === 0) return [];
+  const products = await db.collection('products').find(
+    { externalId: { $in: externalIds } },
+    { projection: { externalId: 1, name: 1 } },
+  ).toArray();
+  const map = new Map<string, string>(products.map((p: any) => [p.externalId, p.name]));
+  return externalIds.map((id) => ({ externalId: id, name: map.get(id) || 'Unknown' }));
+}
+
 export function createMonitoringRouter(
   config: MonitoringConfig,
   healthChecker: any,
@@ -164,6 +203,7 @@ export function createMonitoringRouter(
             startedAt: 1, completedAt: 1, durationMs: 1, status: 1,
             productsFound: 1, productsCreated: 1, productsUpdated: 1,
             productsUnavailable: 1, errorCount: 1, triggerSource: 1,
+            createdProductIds: 1, updatedProductIds: 1,
           },
         }).toArray(),
         execCollection.countDocuments(filter),
@@ -204,7 +244,17 @@ export function createMonitoringRouter(
         return;
       }
 
-      res.json(doc);
+      const createdProductIds: string[] = doc.createdProductIds || [];
+      const updatedProductIds: string[] = doc.updatedProductIds || [];
+      const [createdProducts, updatedProducts] = await Promise.all([
+        lookupProductNames(db, createdProductIds),
+        lookupProductNames(db, updatedProductIds),
+      ]);
+
+      const errors: string[] = doc.errors || [];
+      const friendlyErrors = errors.map(humanReadableError);
+
+      res.json({ ...doc, createdProducts, updatedProducts, friendlyErrors });
     } catch (error) {
       console.error('[API] Error getting execution:', error);
       res.status(500).json({ error: 'Failed to get execution' });

@@ -187,7 +187,7 @@ async function runIncrementalScraper(forceFullScrape = false) {
     console.log(`[Incremental] Pre-check: ${preCheckResult.changed.length} changed, ${preCheckResult.unchanged.length} unchanged`);
     // Step 2: Scrape ALL categories (to update stock)
     console.log('[Incremental] Scraping all categories for stock update...');
-    const scrapeResults = { created: 0, updated: 0, errors: [], durationMs: 0 };
+    const scrapeResults = { created: 0, updated: 0, createdIds: [], updatedIds: [], errors: [], durationMs: 0 };
     const startTime = Date.now();
     const allCategoryIds = categories.map((c) => c.id);
     const MAX_PARALLEL = 4;
@@ -204,12 +204,16 @@ async function runIncrementalScraper(forceFullScrape = false) {
             }
             catch (e) {
                 console.error(`[Incremental] Error scraping ${categoryId}:`, e.message);
-                return { created: 0, updated: 0, errors: [`Error scraping ${categoryId}: ${e.message}`], success: false };
+                return { created: 0, updated: 0, createdIds: [], updatedIds: [], errors: [`Error scraping ${categoryId}: ${e.message}`], success: false };
             }
         }));
         for (const r of batchResults) {
             scrapeResults.created += r.created || 0;
             scrapeResults.updated += r.updated || 0;
+            if (r.createdIds)
+                scrapeResults.createdIds.push(...r.createdIds);
+            if (r.updatedIds)
+                scrapeResults.updatedIds.push(...r.updatedIds);
             if (r.errors) {
                 scrapeResults.errors.push(...r.errors);
             }

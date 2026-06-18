@@ -15,6 +15,42 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.createMonitoringRouter = createMonitoringRouter;
 const mongodb_1 = require("mongodb");
+const errorPatterns = [
+    [/EAGAIN/, 'System resources temporarily unavailable (EAGAIN)'],
+    [/ECONNREFUSED/, 'Connection refused by the server'],
+    [/ECONNRESET/, 'Connection was reset by the peer'],
+    [/ENOTFOUND/, 'DNS lookup failed — host not found'],
+    [/ETIMEDOUT/, 'Connection timed out'],
+    [/ENETUNREACH/, 'Network is unreachable'],
+    [/EPIPE/, 'Broken pipe — connection lost'],
+    [/ETIMEOUT/, 'Request timed out'],
+    [/socket hang up/, 'Socket connection was closed unexpectedly'],
+    [/read ETIMEDOUT/, 'Read operation timed out'],
+    [/connect ETIMEDOUT/, 'Connection attempt timed out'],
+    [/429/, 'Too many requests — rate limited'],
+    [/status code 5\d{2}/, 'Server error on the supplier side'],
+    [/status code 4(?!29)\d{2}/, 'Request was rejected by the supplier'],
+    [/MongoError|MongoServerError/, 'Database error'],
+    [/EACCES/, 'Permission denied'],
+    [/EADDRINUSE/, 'Address already in use'],
+    [/EHOSTUNREACH/, 'Host is unreachable'],
+];
+function humanReadableError(error) {
+    for (const [pattern, message] of errorPatterns) {
+        if (pattern.test(error))
+            return message;
+    }
+    if (error.length > 120)
+        return error.substring(0, 117) + '...';
+    return error;
+}
+async function lookupProductNames(db, externalIds) {
+    if (!externalIds || externalIds.length === 0)
+        return [];
+    const products = await db.collection('products').find({ externalId: { $in: externalIds } }, { projection: { externalId: 1, name: 1 } }).toArray();
+    const map = new Map(products.map((p) => [p.externalId, p.name]));
+    return externalIds.map((id) => ({ externalId: id, name: map.get(id) || 'Unknown' }));
+}
 function createMonitoringRouter(config, healthChecker, metricsAggregator, sseEmitter) {
     const router = require('express').Router();
     const db = config.db;
@@ -147,6 +183,7 @@ function createMonitoringRouter(config, healthChecker, metricsAggregator, sseEmi
                         startedAt: 1, completedAt: 1, durationMs: 1, status: 1,
                         productsFound: 1, productsCreated: 1, productsUpdated: 1,
                         productsUnavailable: 1, errorCount: 1, triggerSource: 1,
+                        createdProductIds: 1, updatedProductIds: 1,
                     },
                 }).toArray(),
                 execCollection.countDocuments(filter),
@@ -185,7 +222,15 @@ function createMonitoringRouter(config, healthChecker, metricsAggregator, sseEmi
                 res.status(404).json({ error: 'Execution not found' });
                 return;
             }
-            res.json(doc);
+            const createdProductIds = doc.createdProductIds || [];
+            const updatedProductIds = doc.updatedProductIds || [];
+            const [createdProducts, updatedProducts] = await Promise.all([
+                lookupProductNames(db, createdProductIds),
+                lookupProductNames(db, updatedProductIds),
+            ]);
+            const errors = doc.errors || [];
+            const friendlyErrors = errors.map(humanReadableError);
+            res.json({ ...doc, createdProducts, updatedProducts, friendlyErrors });
         }
         catch (error) {
             console.error('[API] Error getting execution:', error);

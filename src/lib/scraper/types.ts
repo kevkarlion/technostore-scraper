@@ -92,6 +92,8 @@ export interface ScraperResult {
   success: boolean;
   created: number;
   updated: number;
+  createdIds: string[];
+  updatedIds: string[];
   errors: string[];
   durationMs: number;
   timestamp: Date;

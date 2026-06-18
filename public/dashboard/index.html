@@ -441,6 +441,11 @@
       margin: 16px 0 8px 0;
       font-weight: 600;
     }
+    .product-subsection { margin: 8px 0; }
+    .product-subsection strong { display: block; margin-bottom: 4px; color: var(--text-bright); }
+    .product-list { list-style: none; padding: 0; margin: 0; max-height: 200px; overflow-y: auto; }
+    .product-list li { padding: 2px 0; font-size: 13px; }
+    .product-list code { color: var(--accent); margin-right: 8px; }
 
     /* ============================================
        Banners (offline / loading)
@@ -482,7 +487,7 @@
       .stats-grid { grid-template-columns: 1fr 1fr; gap: 8px; }
       .stat-value { font-size: 16px; }
       .history-table th, .history-table td { padding: 6px 6px; font-size: 11px; }
-      .history-table .col-products, .history-table .col-errors { display: none; }
+      .history-table .col-products, .history-table .col-changes, .history-table .col-errors { display: none; }
       .charts-grid { grid-template-columns: 1fr; }
       .filters { flex-direction: column; align-items: stretch; }
       .filters select, .filters input { width: 100%; }
@@ -786,6 +791,7 @@
               <th data-sort="durationMs">Duración</th>
               <th data-sort="status">Estado</th>
               <th class="col-products">Productos</th>
+              <th class="col-changes">Cambios</th>
               <th class="col-errors">Errores</th>
               <th>Origen</th>
               <th class="actions">Acciones</th>
@@ -797,7 +803,10 @@
                 <td>${escapeHtml(fmtDate(e.startedAt))}</td>
                 <td>${escapeHtml(fmtDuration(e.durationMs))}</td>
                 <td><span class="badge badge-${escapeHtml(e.status)}">${escapeHtml(transStatus(e.status))}</span></td>
-                <td class="col-products">${(e.productsFound ?? 0).toLocaleString()}</td>
+                <td class="col-products">
+                  ${e.productsCreated != null ? `+${e.productsCreated}` : (e.productsFound ?? 0).toLocaleString()} / ${e.productsUpdated != null ? `~${e.productsUpdated}` : '—'}
+                </td>
+                <td class="col-changes">${((e.createdProductIds?.length || 0) + (e.updatedProductIds?.length || 0)).toLocaleString()}</td>
                 <td class="col-errors">${e.errorCount ?? 0}</td>
                 <td>${escapeHtml(e.triggerSource || '—')}</td>
                 <td class="actions"><a href="#" data-exec-id="${escapeHtml(e._id)}">Ver</a></td>
@@ -841,6 +850,7 @@
         const e = await apiGet('/executions/' + encodeURIComponent(id));
         const statusClass = 'badge-' + (e.status || 'idle');
         const errors = e.errors || [];
+        const friendlyErrors = e.friendlyErrors || errors;
         const logs = e.logEntries || [];
 
         body.innerHTML = `
@@ -860,10 +870,30 @@
             <div class="detail-row" style="grid-column: 1 / -1"><span class="label">ID de Ejecución</span><span class="value"><code>${escapeHtml(e._id)}</code></span></div>
           </div>
 
-          ${errors.length > 0 ? `
-            <div class="section-title">Errores (${errors.length})</div>
+          ${(e.createdProducts?.length > 0 || e.updatedProducts?.length > 0) ? `
+            <div class="section-title">Productos modificados</div>
+            ${e.createdProducts?.length > 0 ? `
+              <div class="product-subsection">
+                <strong>Creados (${e.createdProducts.length})</strong>
+                <ul class="product-list">
+                  ${e.createdProducts.map(p => `<li><code>${escapeHtml(p.externalId)}</code> — ${escapeHtml(p.name)}</li>`).join('')}
+                </ul>
+              </div>
+            ` : ''}
+            ${e.updatedProducts?.length > 0 ? `
+              <div class="product-subsection">
+                <strong>Actualizados (${e.updatedProducts.length})</strong>
+                <ul class="product-list">
+                  ${e.updatedProducts.map(p => `<li><code>${escapeHtml(p.externalId)}</code> — ${escapeHtml(p.name)}</li>`).join('')}
+                </ul>
+              </div>
+            ` : ''}
+          ` : ''}
+
+          ${friendlyErrors.length > 0 ? `
+            <div class="section-title">Errores (${friendlyErrors.length})</div>
             <ul class="errors-list">
-              ${errors.map(err => `<li>${escapeHtml(err)}</li>`).join('')}
+              ${friendlyErrors.map(err => `<li>${escapeHtml(err)}</li>`).join('')}
             </ul>
           ` : ''}
 

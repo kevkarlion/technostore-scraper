@@ -57,6 +57,8 @@ function createExecutionRecorder(config) {
                 productsCreated: stats.productsCreated,
                 productsUpdated: stats.productsUpdated,
                 productsUnavailable: stats.productsUnavailable,
+                createdProductIds: stats.createdProductIds,
+                updatedProductIds: stats.updatedProductIds,
                 categoriesScraped: [],
                 errorCount: stats.errors.length,
                 errors: stats.errors.slice(0, 50), // cap at 50 errors

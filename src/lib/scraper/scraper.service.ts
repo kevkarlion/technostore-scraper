@@ -474,6 +474,8 @@ export class ScraperService {
     const startTime = Date.now();
     let created = 0;
     let updated = 0;
+    const createdIds: string[] = [];
+    const updatedIds: string[] = [];
     const errors: string[] = [];
 
     try {
@@ -506,8 +508,8 @@ export class ScraperService {
                 inStock: product.stock > 0 || true,
               });
 
-              if (result.created) created++;
-              if (result.updated) updated++;
+              if (result.created) { created++; createdIds.push(product.externalId); }
+              if (result.updated) { updated++; updatedIds.push(product.externalId); }
             } catch (e: any) {
               errors.push(`Error saving product ${product.externalId}: ${e.message}`);
             }
@@ -536,6 +538,8 @@ export class ScraperService {
       success: errors.length === 0 || !errors.some((e) => e.startsWith('Fatal')),
       created,
       updated,
+      createdIds,
+      updatedIds,
       errors,
       durationMs: Date.now() - startTime,
       timestamp: new Date(),

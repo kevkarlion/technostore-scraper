@@ -28,6 +28,8 @@ export function createExecutionRecorder(config: MonitoringConfig) {
         productsUpdated: number;
         productsUnavailable: number;
         errors: string[];
+        createdProductIds?: string[];
+        updatedProductIds?: string[];
       };
     }
   ): Promise<{ result: T; executionId: string | null }> {
@@ -75,6 +77,8 @@ export function createExecutionRecorder(config: MonitoringConfig) {
         productsCreated: stats.productsCreated,
         productsUpdated: stats.productsUpdated,
         productsUnavailable: stats.productsUnavailable,
+        createdProductIds: stats.createdProductIds,
+        updatedProductIds: stats.updatedProductIds,
         categoriesScraped: [],
         errorCount: stats.errors.length,
         errors: stats.errors.slice(0, 50), // cap at 50 errors

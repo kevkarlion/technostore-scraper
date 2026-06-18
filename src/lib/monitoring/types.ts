@@ -16,6 +16,8 @@ export interface ExecutionLog {
   categoriesScraped: string[];
   errorCount: number;
   errors: string[];
+  createdProductIds?: string[];
+  updatedProductIds?: string[];
   logEntries: string[];
   metadata?: {
     commitSha?: string;

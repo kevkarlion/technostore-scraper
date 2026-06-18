@@ -421,6 +421,8 @@ class ScraperService {
         const startTime = Date.now();
         let created = 0;
         let updated = 0;
+        const createdIds = [];
+        const updatedIds = [];
         const errors = [];
         try {
             // Login first
@@ -449,10 +451,14 @@ class ScraperService {
                                 attributes: [],
                                 inStock: product.stock > 0 || true,
                             });
-                            if (result.created)
+                            if (result.created) {
                                 created++;
-                            if (result.updated)
+                                createdIds.push(product.externalId);
+                            }
+                            if (result.updated) {
                                 updated++;
+                                updatedIds.push(product.externalId);
+                            }
                         }
                         catch (e) {
                             errors.push(`Error saving product ${product.externalId}: ${e.message}`);
@@ -481,6 +487,8 @@ class ScraperService {
             success: errors.length === 0 || !errors.some((e) => e.startsWith('Fatal')),
             created,
             updated,
+            createdIds,
+            updatedIds,
             errors,
             durationMs: Date.now() - startTime,
             timestamp: new Date(),

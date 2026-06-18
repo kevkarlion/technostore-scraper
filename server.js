@@ -305,6 +305,8 @@ app.post('/run', async (req, res) => {
                 productsUpdated: r.scrapeResult?.updated || 0,
                 productsUnavailable: 0,
                 errors: r.scrapeResult?.errors || [],
+                createdProductIds: r.scrapeResult?.createdIds || [],
+                updatedProductIds: r.scrapeResult?.updatedIds || [],
             }),
         });
         void runPostExecutionHooks(executionId);
@@ -411,6 +413,8 @@ app.post('/scraper/incremental', async (req, res) => {
                 productsUpdated: r.scrapeResult?.updated || 0,
                 productsUnavailable: 0,
                 errors: r.scrapeResult?.errors || [],
+                createdProductIds: r.scrapeResult?.createdIds || [],
+                updatedProductIds: r.scrapeResult?.updatedIds || [],
             }),
         });
         void runPostExecutionHooks(executionId);
@@ -486,6 +490,8 @@ app.listen(PORT, () => {
                         productsUpdated: r.scrapeResult?.updated || 0,
                         productsUnavailable: 0,
                         errors: r.scrapeResult?.errors || [],
+                        createdProductIds: r.scrapeResult?.createdIds || [],
+                        updatedProductIds: r.scrapeResult?.updatedIds || [],
                     }),
                 });
                 void runPostExecutionHooks(executionId);

@@ -167,7 +167,7 @@ export async function preCheckCategories(): Promise<{
 export async function runIncrementalScraper(forceFullScrape: boolean = false): Promise<{
   success: boolean;
   preCheck: { total: number; changed: string[]; unchanged: string[]; errors: string[] };
-  scrapeResult?: { created: number; updated: number; errors: string[]; durationMs: number };
+  scrapeResult?: { created: number; updated: number; createdIds: string[]; updatedIds: string[]; errors: string[]; durationMs: number };
   timestamp: Date;
 }> {
   console.log('[Incremental] Starting incremental scraper...');
@@ -189,7 +189,7 @@ export async function runIncrementalScraper(forceFullScrape: boolean = false): P
 
   // Step 2: Scrape ALL categories (to update stock)
   console.log('[Incremental] Scraping all categories for stock update...');
-  const scrapeResults = { created: 0, updated: 0, errors: [] as string[], durationMs: 0 };
+  const scrapeResults = { created: 0, updated: 0, createdIds: [] as string[], updatedIds: [] as string[], errors: [] as string[], durationMs: 0 };
   const startTime = Date.now();
 
   const allCategoryIds = categories.map((c) => c.id);
@@ -214,7 +214,7 @@ export async function runIncrementalScraper(forceFullScrape: boolean = false): P
           return result;
         } catch (e: any) {
           console.error(`[Incremental] Error scraping ${categoryId}:`, e.message);
-          return { created: 0, updated: 0, errors: [`Error scraping ${categoryId}: ${e.message}`], success: false };
+          return { created: 0, updated: 0, createdIds: [], updatedIds: [], errors: [`Error scraping ${categoryId}: ${e.message}`], success: false };
         }
       }),
     );
@@ -222,6 +222,8 @@ export async function runIncrementalScraper(forceFullScrape: boolean = false): P
     for (const r of batchResults) {
       scrapeResults.created += r.created || 0;
       scrapeResults.updated += r.updated || 0;
+      if (r.createdIds) scrapeResults.createdIds.push(...r.createdIds);
+      if (r.updatedIds) scrapeResults.updatedIds.push(...r.updatedIds);
       if (r.errors) {
         scrapeResults.errors.push(...r.errors);
       }
