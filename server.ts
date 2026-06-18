@@ -282,9 +282,10 @@ app.get('/debug/mongo-test', async (req, res) => {
 });
 app.post('/run', async (req, res) => {
   const release = tryAcquireScraper('http');
-  if (!release) return; // cron skip, never happens for http
+  if (!release) return;
+  const forceFullScrape = req.query.force === 'true';
+  res.json({ success: true, message: 'Scrape started in background', startedAt: new Date().toISOString() });
   try {
-    const forceFullScrape = req.query.force === 'true';
     const { result, executionId } = await executionRecorder.recordExecution(
       'http',
       () => runIncrementalScraper(forceFullScrape),
@@ -299,10 +300,9 @@ app.post('/run', async (req, res) => {
       }
     );
     void runPostExecutionHooks(executionId);
-    res.json(result);
+    console.log(`[Scraper] Background run complete: ${result.scrapeResult?.created} created, ${result.scrapeResult?.updated} updated`);
   } catch (error: any) {
-    const status = error.statusCode || 500;
-    res.status(status).json({ success: false, error: error.message });
+    console.error('[Scraper] Background run failed:', error.message);
   } finally {
     release();
   }
@@ -336,23 +336,14 @@ app.get('/scraper/categories', (req, res) => {
 app.post('/scraper/run', async (req, res) => {
   const release = tryAcquireScraper('http');
   if (!release) return;
+  const { categoryId, idsubrubro1, source } = req.body;
+  res.json({ success: true, message: 'Scrape started in background', categoryId, startedAt: new Date().toISOString() });
   try {
-    let lastError = null;
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      try {
-        console.log(`[Scraper] Attempt ${attempt}/3...`);
-        const { categoryId, idsubrubro1, source } = req.body;
-        const result = await runScraper({ categoryId, idsubrubro1, source });
-        return res.json(result);
-      } catch (error) {
-        console.error(`[Scraper] Attempt ${attempt} failed:`, error.message);
-        lastError = error;
-        if (attempt < 3) {
-          await new Promise(r => setTimeout(r, 5000));
-        }
-      }
-    }
-    res.status(500).json({ success: false, error: String(lastError) });
+    console.log(`[Scraper] Background run for ${categoryId}...`);
+    const result = await runScraper({ categoryId, idsubrubro1, source });
+    console.log(`[Scraper] Background run for ${categoryId} complete: ${result.created} created, ${result.updated} updated`);
+  } catch (error: any) {
+    console.error(`[Scraper] Background run for ${categoryId} failed:`, error.message);
   } finally {
     release();
   }
@@ -382,43 +373,28 @@ app.post('/scraper/test-category', async (req, res) => {
 });
 
 app.post('/scraper/incremental', async (req, res) => {
-  // Run incremental scraper with pre-check (using new module)
-  // Add retry logic for cold starts
   const release = tryAcquireScraper('http');
   if (!release) return;
+  const { forceFullScrape } = req.body;
+  res.json({ success: true, message: 'Incremental scrape started in background', startedAt: new Date().toISOString() });
   try {
-    let lastError = null;
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      try {
-        console.log(`[Incremental] Attempt ${attempt}/3...`);
-        const { forceFullScrape } = req.body;
-        const { result, executionId } = await executionRecorder.recordExecution(
-          'http',
-          () => runIncrementalScraper(forceFullScrape),
-          {
-            extractStats: (r: any) => ({
-              productsFound: (r.scrapeResult?.created || 0) + (r.scrapeResult?.updated || 0),
-              productsCreated: r.scrapeResult?.created || 0,
-              productsUpdated: r.scrapeResult?.updated || 0,
-              productsUnavailable: 0,
-              errors: r.scrapeResult?.errors || [],
-            }),
-          }
-        );
-        // Fire-and-forget: health checks + today's metrics snapshot.
-        // Never awaited — the HTTP response must not wait on monitoring.
-        void runPostExecutionHooks(executionId);
-        return res.json(result);
-      } catch (error) {
-        console.error(`[Incremental] Attempt ${attempt} failed:`, error.message);
-        lastError = error;
-        // Wait 5 seconds before retry
-        if (attempt < 3) {
-          await new Promise(r => setTimeout(r, 5000));
-        }
+    const { result, executionId } = await executionRecorder.recordExecution(
+      'http',
+      () => runIncrementalScraper(forceFullScrape),
+      {
+        extractStats: (r: any) => ({
+          productsFound: (r.scrapeResult?.created || 0) + (r.scrapeResult?.updated || 0),
+          productsCreated: r.scrapeResult?.created || 0,
+          productsUpdated: r.scrapeResult?.updated || 0,
+          productsUnavailable: 0,
+          errors: r.scrapeResult?.errors || [],
+        }),
       }
-    }
-    res.status(500).json({ success: false, error: String(lastError) });
+    );
+    void runPostExecutionHooks(executionId);
+    console.log(`[Incremental] Background run complete: ${result.scrapeResult?.created} created, ${result.scrapeResult?.updated} updated`);
+  } catch (error: any) {
+    console.error('[Incremental] Background run failed:', error.message);
   } finally {
     release();
   }
