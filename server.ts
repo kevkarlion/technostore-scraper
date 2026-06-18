@@ -281,11 +281,12 @@ app.get('/debug/mongo-test', async (req, res) => {
   }
 });
 app.post('/run', async (req, res) => {
-  const release = tryAcquireScraper('http');
-  if (!release) return;
-  const forceFullScrape = req.query.force === 'true';
-  res.json({ success: true, message: 'Scrape started in background', startedAt: new Date().toISOString() });
+  let release: (() => void) | null = null;
   try {
+    release = tryAcquireScraper('http');
+    if (!release) { res.status(409).json({ error: 'Scraper is already running' }); return; }
+    const forceFullScrape = req.query.force === 'true';
+    res.json({ success: true, message: 'Scrape started in background', startedAt: new Date().toISOString() });
     const { result, executionId } = await executionRecorder.recordExecution(
       'http',
       () => runIncrementalScraper(forceFullScrape),
@@ -302,9 +303,10 @@ app.post('/run', async (req, res) => {
     void runPostExecutionHooks(executionId);
     console.log(`[Scraper] Background run complete: ${result.scrapeResult?.created} created, ${result.scrapeResult?.updated} updated`);
   } catch (error: any) {
+    if (!res.headersSent) res.status(error.statusCode || 500).json({ error: error.message });
     console.error('[Scraper] Background run failed:', error.message);
   } finally {
-    release();
+    if (release) release();
   }
 });
 app.get('/status', async (req, res) => {
@@ -334,18 +336,21 @@ app.get('/scraper/categories', (req, res) => {
 });
 
 app.post('/scraper/run', async (req, res) => {
-  const release = tryAcquireScraper('http');
-  if (!release) return;
-  const { categoryId, idsubrubro1, source } = req.body;
-  res.json({ success: true, message: 'Scrape started in background', categoryId, startedAt: new Date().toISOString() });
+  let release: (() => void) | null = null;
+  const categoryId = req.body.categoryId;
   try {
+    release = tryAcquireScraper('http');
+    if (!release) { res.status(409).json({ error: 'Scraper is already running' }); return; }
+    const { idsubrubro1, source } = req.body;
+    res.json({ success: true, message: 'Scrape started in background', categoryId, startedAt: new Date().toISOString() });
     console.log(`[Scraper] Background run for ${categoryId}...`);
     const result = await runScraper({ categoryId, idsubrubro1, source });
     console.log(`[Scraper] Background run for ${categoryId} complete: ${result.created} created, ${result.updated} updated`);
   } catch (error: any) {
+    if (!res.headersSent) res.status(error.statusCode || 500).json({ error: error.message });
     console.error(`[Scraper] Background run for ${categoryId} failed:`, error.message);
   } finally {
-    release();
+    if (release) release();
   }
 });
 
@@ -373,11 +378,12 @@ app.post('/scraper/test-category', async (req, res) => {
 });
 
 app.post('/scraper/incremental', async (req, res) => {
-  const release = tryAcquireScraper('http');
-  if (!release) return;
-  const { forceFullScrape } = req.body;
-  res.json({ success: true, message: 'Incremental scrape started in background', startedAt: new Date().toISOString() });
+  let release: (() => void) | null = null;
   try {
+    release = tryAcquireScraper('http');
+    if (!release) { res.status(409).json({ error: 'Scraper is already running' }); return; }
+    const { forceFullScrape } = req.body;
+    res.json({ success: true, message: 'Incremental scrape started in background', startedAt: new Date().toISOString() });
     const { result, executionId } = await executionRecorder.recordExecution(
       'http',
       () => runIncrementalScraper(forceFullScrape),
@@ -394,9 +400,10 @@ app.post('/scraper/incremental', async (req, res) => {
     void runPostExecutionHooks(executionId);
     console.log(`[Incremental] Background run complete: ${result.scrapeResult?.created} created, ${result.scrapeResult?.updated} updated`);
   } catch (error: any) {
+    if (!res.headersSent) res.status(error.statusCode || 500).json({ error: error.message });
     console.error('[Incremental] Background run failed:', error.message);
   } finally {
-    release();
+    if (release) release();
   }
 });
 
