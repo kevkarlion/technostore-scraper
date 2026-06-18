@@ -1,8 +1,6 @@
 import 'dotenv/config';
 import express from 'express';
-import { chromium } from 'playwright';
 import { MongoClient, ObjectId } from 'mongodb';
-import crypto from 'crypto';
 import cron from 'node-cron';
 
 // ===============================================
@@ -37,8 +35,8 @@ function formatArgentinaDate(date: Date | string): string {
   });
 }
 
-// Import new scraper modules (use alias to avoid conflict)
-import { runScraper, runIncrementalScraper as runIncrementalScraperNew, jotakpCategories } from './src/lib/scraper/index';
+// Import new scraper modules
+import { runScraper, runIncrementalScraper, jotakpCategories } from './src/lib/scraper/index';
 import { initMonitoring, createExecutionRecorder, createHealthChecker, createMetricsAggregator, createSSEEmitter } from './src/lib/monitoring';
 import { createMonitoringRouter } from './src/lib/monitoring/api';
 
@@ -78,25 +76,7 @@ if (!SCRAPER_CONFIG.selectors.login.emailInputSelector) {
 
 console.log('[Config] Selectors:', SCRAPER_CONFIG.selectors.login);
 
-const JOTAKP_CATEGORIES = [
-  { id: 'carry-caddy-disk', idsubrubro1: 100 },
-  { id: 'cd-dvd-bluray', idsubrubro1: 13 },
-  { id: 'discos-externos', idsubrubro1: 14 },
-  { id: 'discos-hdd', idsubrubro1: 69 },
-  { id: 'discos-m2', idsubrubro1: 157 },
-  { id: 'discos-ssd', idsubrubro1: 156 },
-  { id: 'memorias-flash', idsubrubro1: 12 },
-  { id: 'pendrive', idsubrubro1: 5 },
-  { id: 'memorias', idsubrubro1: 1 },
-  { id: 'auricular-bluetooth', idsubrubro1: 149 },
-  { id: 'auricular-cableado', idsubrubro1: 36 },
-  { id: 'microfonos', idsubrubro1: 45 },
-  { id: 'parlantes', idsubrubro1: 35 },
-];
 
-const CATEGORIES = JOTAKP_CATEGORIES;
-const MAX_PARALLEL = 2;
-const MAX_PAGES = 3;
 
 const MONGO_URI = process.env.MONGO_URI || process.env.MONGODB_URI;
 const DB_NAME = process.env.DB_NAME || process.env.MONGODB_DB_NAME || 'ecommerce';
@@ -248,328 +228,7 @@ async function runPostExecutionHooks(executionId: string | null): Promise<void> 
   }
 }
 
-function generateContentHash(content: string): string {
-  return crypto.createHash('md5').update(content).digest('hex');
-}
 
-async function getCategoryPreview(page: any, idsubrubro1: number, baseUrl: string) {
-  try {
-    const url = baseUrl + '/buscar.aspx?idsubrubro1=' + idsubrubro1 + '&pag=1';
-    await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
-    await page.waitForSelector("div:has-text('U$D')", { timeout: 10000 }).catch(() => {});
-    const content = await page.content();
-    const contentHash = generateContentHash(content);
-    const items = await page.locator('a[href*="articulo.aspx?id="]').all();
-    const productIds: string[] = [];
-    const seenIds = new Set();
-    for (const item of items) {
-      const href = await item.getAttribute('href');
-      if (href) {
-        const match = href.match(/id=(\d+)/);
-        if (match && !seenIds.has(match[1])) {
-          seenIds.add(match[1]);
-          productIds.push(match[1]);
-        }
-      }
-    }
-    return { contentHash, productCount: productIds.length, productIds };
-  } catch (e) {
-    console.error('[Pre-check] Error:', e.message);
-    return null;
-  }
-}
-
-async function preCheckCategories(categories: any[], page: any) {
-  const result = { changed: [], unchanged: [], errors: [] };
-  console.log('[Pre-check] Checking', categories.length, 'categories...');
-  for (let i = 0; i < categories.length; i += MAX_PARALLEL) {
-    const batch = categories.slice(i, i + MAX_PARALLEL);
-    console.log('[Pre-check] Batch', Math.floor(i / MAX_PARALLEL) + 1);
-    const batchPromises = batch.map(async (cat: any) => {
-      const preview = await getCategoryPreview(page, cat.idsubrubro1, SCRAPER_CONFIG.baseUrl);
-      if (!preview) return { categoryId: cat.id, status: 'error' };
-      const database = await getDb();
-      const existing = await database.collection('scraper_state').findOne({ categoryId: cat.id });
-      const hasChanged = !existing || existing.contentHash !== preview.contentHash;
-      await database.collection('scraper_state').updateOne(
-        { categoryId: cat.id },
-        { $set: { categoryId: cat.id, idsubrubro1: cat.idsubrubro1, contentHash: preview.contentHash, productCount: preview.productCount, capturedAt: new Date() } },
-        { upsert: true }
-      );
-      return { categoryId: cat.id, status: hasChanged ? 'changed' : 'unchanged', count: preview.productCount };
-    });
-    const batchResults = await Promise.all(batchPromises);
-    for (const r of batchResults) {
-      if (r.status === 'changed') result.changed.push(r.categoryId);
-      else if (r.status === 'unchanged') result.unchanged.push(r.categoryId);
-      else result.errors.push(r.categoryId);
-    }
-  }
-  console.log('[Pre-check] Complete:', result.changed.length, 'changed');
-  return result;
-}
-
-async function scrapeCategoryProducts(page: any, categoryId: string, idsubrubro1: number) {
-  console.log('[Scraper] Scraping:', categoryId);
-  const products: any[] = [];
-  const scrapedIds: string[] = [];
-  for (let pageNum = 1; pageNum <= MAX_PAGES; pageNum++) {
-    const url = SCRAPER_CONFIG.baseUrl + '/buscar.aspx?idsubrubro1=' + idsubrubro1 + '&pag=' + pageNum;
-    try {
-      await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
-      await page.waitForSelector('a[href*="articulo.aspx?id="]', { timeout: 5000 }).catch(() => {});
-      const items = await page.locator('a[href*="articulo.aspx?id="]').all();
-      if (items.length === 0) break;
-      console.log('[Scraper] Page', pageNum, ':', items.length, 'products');
-      for (const item of items) {
-        try {
-          const href = await item.getAttribute('href');
-          const fullText = await item.textContent();
-          const match = href.match(/id=(\d+)/);
-          const externalId = match ? match[1] : null;
-          if (!externalId) continue;
-          let price: number | null = null;
-          const priceMatch = fullText.match(/U\$D\s+([\d.,]+)/);
-          if (priceMatch) price = parseFloat(priceMatch[1].replace(',', '.'));
-          let name = fullText.replace(/U\$D[\s\d.,+IVA%]+$/, '').trim();
-          if (!name || name.length < 3) continue;
-          await page.goto(SCRAPER_CONFIG.baseUrl + '/articulo.aspx?id=' + externalId, { waitUntil: 'networkidle', timeout: 30000 });
-          let description = '';
-          try {
-            const desc = await page.$('#ContentPlaceHolder1_lblDescripcion');
-            if (desc) description = await desc.textContent() || '';
-          } catch {}
-          let stock = 0;
-          try {
-            const stockEl = await page.$('#ContentPlaceHolder1_lblStock');
-            if (stockEl) {
-              const stockText = await stockEl.textContent() || '';
-              const stockMatch = stockText.match(/(\d+)/);
-              stock = stockMatch ? parseInt(stockMatch[1]) : 0;
-            }
-          } catch {}
-          let sku = '';
-          try {
-            const skuEl = await page.$('#ContentPlaceHolder1_lblCodigo');
-            if (skuEl) sku = await skuEl.textContent() || '';
-          } catch {}
-          const imageUrls: string[] = [];
-          try {
-            const imgs = await page.locator('div.tg-img-overlay.artImg').all();
-            for (const img of imgs.slice(0, 5)) {
-              const src = await img.getAttribute('data-src');
-              if (src && src.includes('imagenes/')) imageUrls.push(src);
-            }
-          } catch {}
-          await page.goBack();
-          await page.waitForLoadState('networkidle').catch(() => {});
-          products.push({ externalId, name, price, stock, description, sku, imageUrls });
-          scrapedIds.push(externalId);
-        } catch (e) {
-          console.log('[Scraper] Error product:', e.message);
-          try { await page.goBack(); } catch {}
-        }
-      }
-    } catch (e) {
-      console.log('[Scraper] Error page', pageNum, ':', e.message);
-    }
-  }
-  return { products, scrapedIds };
-}
-
-// ===============================================
-// BULK OPERATIONS - Optimizado para M0
-// ===============================================
-async function saveProductsBatch(products: any[], categoryId: string) {
-  if (products.length === 0) return { created: 0, updated: 0, unchanged: 0 };
-  
-  const database = await getDb();
-  const collection = database.collection('products');
-  
-  // 1. Obtener todos los productos existentes de una sola vez
-  const externalIds = products.map(p => p.externalId);
-  const existingProducts = await collection.find({ 
-    externalId: { $in: externalIds }, 
-    supplier: 'jotakp' 
-  }).toArray();
-  
-  const existingMap = new Map(existingProducts.map((p: any) => [p.externalId, p]));
-  
-  // 2. Preparar operaciones bulk
-  const operations: any[] = [];
-  const now = new Date();
-  
-  for (const product of products) {
-    const existing: any = existingMap.get(product.externalId);
-    const baseUpdate: any = { 
-      lastSyncedAt: now, 
-      categories: [categoryId],
-      externalId: product.externalId,
-      supplier: 'jotakp'
-    };
-    
-    // Agregar campos si existen
-    if (product.name) baseUpdate.name = product.name;
-    if (product.price !== null) baseUpdate.price = product.price;
-    if (product.stock !== undefined) baseUpdate.stock = product.stock;
-    if (product.description) baseUpdate.description = product.description;
-    if (product.sku) baseUpdate.sku = product.sku;
-    if (product.imageUrls && product.imageUrls.length > 0) baseUpdate.imageUrls = product.imageUrls;
-    
-    if (existing) {
-      // Verificar si hay cambios
-      const changed: any = { lastSyncedAt: now };
-      for (const key of ['name', 'price', 'stock', 'description', 'sku', 'imageUrls']) {
-        if (product[key] !== undefined && JSON.stringify(existing[key]) !== JSON.stringify(product[key])) {
-          changed[key] = product[key];
-        }
-      }
-      
-      if (Object.keys(changed).length > 1) { // más que solo lastSyncedAt
-        operations.push({
-          updateOne: {
-            filter: { _id: existing._id },
-            update: { $set: changed }
-          }
-        });
-      }
-    } else {
-      // Insertar nuevo
-      operations.push({
-        insertOne: {
-          document: {
-            ...baseUpdate,
-            status: 'active',
-            inStock: true,
-            currency: 'USD',
-            attributes: [],
-            createdAt: now,
-            updatedAt: now
-          }
-        }
-      });
-    }
-  }
-  
-  // 3. Ejecutar bulkWrite si hay operaciones
-  if (operations.length > 0) {
-    const result = await collection.bulkWrite(operations, { ordered: false });
-    return { 
-      created: result.insertedCount || 0, 
-      updated: result.modifiedCount || 0,
-      unchanged: products.length - (result.insertedCount || 0) - (result.modifiedCount || 0)
-    };
-  }
-  
-  return { created: 0, updated: 0, unchanged: products.length };
-}
-
-// Función legacy para compatibilidad (usa bulk internamente)
-async function saveProduct(product: any, categoryId: string) {
-  const result = await saveProductsBatch([product], categoryId);
-  return { created: result.created > 0, updated: result.updated > 0 };
-}
-
-async function markDiscontinued(categoryId: string, scrapedIds: string[]) {
-  const database = await getDb();
-  const result = await database.collection('products').updateMany(
-    { categories: categoryId, supplier: 'jotakp', externalId: { $nin: scrapedIds }, inStock: true },
-    { $set: { inStock: false } }
-  );
-  return result.modifiedCount;
-}
-
-async function runIncrementalScraper(forceFullScrape: boolean = false) {
-  console.log('[Incremental] Starting...');
-  const chromiumPath = process.env.CHROMIUM_PATH || '/usr/bin/chromium';
-
-  // Railway fix: kill orphan Chromium processes before launching a new one.
-  try {
-    const { execSync } = require('child_process');
-    execSync('pkill -f chromium 2>/dev/null; true', { stdio: 'ignore' });
-    console.log('[Incremental] Cleaned orphan chromium processes');
-  } catch { /* pkill returns non-zero when no match — fine */ }
-
-  const browser = await chromium.launch({ headless: true, executablePath: chromiumPath, args: ['--no-sandbox', '--disable-setuid-sandbox'] });
-  const results = { created: 0, updated: 0, unchanged: 0, discontinued: 0 };
-  
-  try {
-    console.log('[Incremental] Login...');
-    const context = await browser.newContext();
-    const page = await context.newPage();
-    await page.goto(SCRAPER_CONFIG.loginUrl, { waitUntil: 'networkidle' });
-    await page.fill(SCRAPER_CONFIG.selectors.login.emailInputSelector, SCRAPER_CONFIG.email);
-    await page.fill(SCRAPER_CONFIG.selectors.login.passwordInputSelector, SCRAPER_CONFIG.password);
-    await page.click(SCRAPER_CONFIG.selectors.login.submitButtonSelector);
-    await page.waitForLoadState('networkidle');
-    await page.waitForTimeout(2000);
-    try {
-      const branchSelect = await page.$('#ContentPlaceHolder1_ddlSucursal, #ddlSucursal');
-      if (branchSelect) {
-        await branchSelect.selectOption({ index: 1 });
-        await page.waitForLoadState('networkidle');
-      }
-    } catch {
-      // Ignore branch selection errors
-    }
-    console.log('[Incremental] Logged in');
-    let preCheckResult;
-    if (forceFullScrape) {
-      preCheckResult = { changed: CATEGORIES.map(c => c.id), unchanged: [], errors: [] };
-    } else {
-      preCheckResult = await preCheckCategories(CATEGORIES, page);
-    }
-    console.log('[Incremental] Pre-check:', preCheckResult.changed.length, 'changed');
-    if (preCheckResult.changed.length === 0) {
-      return { success: true, preCheck: preCheckResult };
-    }
-    const changedCats = CATEGORIES.filter(c => preCheckResult.changed.includes(c.id));
-    for (let i = 0; i < changedCats.length; i += MAX_PARALLEL) {
-      const batch = changedCats.slice(i, i + MAX_PARALLEL);
-      console.log('[Incremental] Scraping batch:', batch.map(c => c.id).join(', '));
-      const batchPromises = batch.map(async (cat) => {
-        try {
-          return await scrapeCategoryProducts(page, cat.id, cat.idsubrubro1);
-        } catch (e) {
-          console.log('[Incremental] Error', cat.id, ':', e.message);
-          return { products: [], scrapedIds: [] };
-        }
-      });
-      const batchResults = await Promise.all(batchPromises);
-      
-      // Guardar en batch POR CATEGORÍA (no producto por producto)
-      for (const r of batchResults) {
-        if (r.products.length > 0) {
-          // Encontrar la categoría correcta para este resultado
-          const catResult = batch.find((cat, idx) => batchResults[idx]?.products === r.products || batchResults[idx] === r);
-          const catId = catResult?.id || 'unknown';
-          
-          // bulkWrite de todos los productos de una vez
-          const saveResult = await saveProductsBatch(r.products, catId);
-          results.created += saveResult.created;
-          results.updated += saveResult.updated;
-          results.unchanged += saveResult.unchanged;
-          
-          // Marcar discontinued solo si hay products scrapeados
-          if (r.scrapedIds.length > 0) {
-            const count = await markDiscontinued(catId, r.scrapedIds);
-            results.discontinued += count;
-          }
-        }
-      }
-      console.log('[Incremental] Done! Created:', results.created, 'Updated:', results.updated);
-    }
-    return { success: true, preCheck: preCheckResult, scrapeResult: results };
-  } catch (error) {
-    console.error('[Incremental] Error:', error);
-    return { success: false, error: String(error) };
-  } finally {
-    // CERRAR conexion Mongo despues de cada scrape (libera conexiones para M0)
-    await closeMongoConnection();
-    console.log('[Mongo] Connection closed after scrape');
-    await browser.close();
-  }
-}
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -604,7 +263,20 @@ app.get('/debug/mongo-test', async (req, res) => {
 app.post('/run', async (req, res) => {
   try {
     const forceFullScrape = req.query.force === 'true';
-    const result = await runIncrementalScraper(forceFullScrape);
+    const { result, executionId } = await executionRecorder.recordExecution(
+      'http',
+      () => runIncrementalScraper(forceFullScrape),
+      {
+        extractStats: (r: any) => ({
+          productsFound: (r.scrapeResult?.created || 0) + (r.scrapeResult?.updated || 0),
+          productsCreated: r.scrapeResult?.created || 0,
+          productsUpdated: r.scrapeResult?.updated || 0,
+          productsUnavailable: 0,
+          errors: r.scrapeResult?.errors || [],
+        }),
+      }
+    );
+    void runPostExecutionHooks(executionId);
     res.json(result);
   } catch (error) {
     res.status(500).json({ success: false, error: String(error) });
@@ -686,7 +358,7 @@ app.post('/scraper/incremental', async (req, res) => {
       const { forceFullScrape } = req.body;
       const { result, executionId } = await executionRecorder.recordExecution(
         'http',
-        () => runIncrementalScraperNew(forceFullScrape),
+        () => runIncrementalScraper(forceFullScrape),
         {
           extractStats: (r: any) => ({
             productsFound: (r.scrapeResult?.created || 0) + (r.scrapeResult?.updated || 0),
@@ -765,7 +437,7 @@ app.listen(PORT, () => {
       try {
         const { result, executionId } = await executionRecorder.recordExecution(
           'cron',
-          () => runIncrementalScraperNew(false),
+          () => runIncrementalScraper(false),
           {
             extractStats: (r: any) => ({
               productsFound: (r.scrapeResult?.created || 0) + (r.scrapeResult?.updated || 0),

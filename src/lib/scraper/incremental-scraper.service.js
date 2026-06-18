@@ -1,4 +1,16 @@
 "use strict";
+/**
+ * Incremental Scraper Service — Axios + Cheerio.
+ *
+ * Provides the pre-check + full-scrape pipeline used by the scheduler
+ * and the HTTP API. No browser, no Playwright — pure HTTP + HTML parsing.
+ *
+ * Flow:
+ *   1. preCheckCategories(): GET first page of each category, compute hash,
+ *      compare with scraper_state.
+ *   2. runIncrementalScraper(): pre-check → scrape all categories via
+ *      runScraper() → return results.
+ */
 var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
     if (k2 === undefined) k2 = k;
     var desc = Object.getOwnPropertyDescriptor(m, k);
@@ -38,406 +50,173 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.preCheckCategories = preCheckCategories;
 exports.runIncrementalScraper = runIncrementalScraper;
-const playwright_1 = require("playwright");
+const cheerio = __importStar(require("cheerio"));
+const crypto_1 = __importDefault(require("crypto"));
 const config_1 = require("./config");
 const scraper_service_1 = require("./scraper.service");
-const crypto_1 = __importDefault(require("crypto"));
-// Set browsers path
-const BROWSERS_PATH = process.env.PLAYWRIGHT_BROWSERS_PATH || "/tmp/ms-playwright";
-process.env.PLAYWRIGHT_BROWSERS_PATH = BROWSERS_PATH;
-process.env.HOME = "/tmp";
-console.log("[Scraper] Initialized PLAYWRIGHT_BROWSERS_PATH:", BROWSERS_PATH);
-/**
- * Incremental Scraper - runs smart scraping every 2 hours
- *
- * Flow:
- * 1. Pre-check: Get first page of each category and calculate hash
- * 2. Compare with previous state - if changed, mark for re-scrape
- * 3. Only scrape categories that changed
- * 4. Update state in DB
- */
-const MAX_PARALLEL_PAGES = 2; // Reducido para evitar sobrecarga
-// Find chromium executable
-async function getChromiumExecutable() {
-    const fs = require("fs");
-    const pathModule = require("path");
-    const { execSync } = require("child_process");
-    const possiblePaths = [
-        // System chromium (Railway, Docker)
-        "/usr/bin/chromium",
-        "/usr/bin/chromium-browser",
-        "/usr/bin/google-chrome",
-        // Vercel cache
-        "/vercel/.cache/ms-playwright/chromium-1208/chrome-linux64/chrome",
-        "/vercel/.cache/ms-playwright/chromium_headless_shell-1208/chrome-headless-shell-linux64/chrome-headless-shell",
-        "/home/sbx_user1051/.cache/ms-playwright/chromium-1208/chrome-linux64/chrome",
-        "/home/sbx_user1051/.cache/ms-playwright/chromium_headless_shell-1208/chrome-headless-shell-linux64/chrome-headless-shell",
-        pathModule.join(BROWSERS_PATH, "chromium-1208", "chrome-linux64", "chrome"),
-        pathModule.join(BROWSERS_PATH, "chromium_headless_shell-1208", "chrome-headless-shell-linux64", "chrome-headless-shell"),
-        pathModule.join("/tmp", "ms-playwright", "chromium-1208", "chrome-linux64", "chrome"),
-    ];
-    console.log("[Scraper] Looking for chromium in", possiblePaths.length, "locations...");
-    for (const p of possiblePaths) {
-        try {
-            console.log("[Scraper] Checking:", p);
-            if (p && fs.existsSync(p)) {
-                console.log("[Scraper] FOUND chromium at:", p);
-                return p;
-            }
-        }
-        catch (e) {
-            console.log("[Scraper] Error checking path:", e);
-        }
-    }
-    // Try to download
-    console.log("[Scraper] No chromium found, attempting download...");
-    try {
-        const downloadDir = BROWSERS_PATH;
-        try {
-            fs.mkdirSync(downloadDir, { recursive: true });
-        }
-        catch {
-            /* ignore */
-        }
-        console.log("[Scraper] Running: npx playwright install chromium");
-        execSync("npx playwright install chromium", {
-            stdio: "inherit",
-            env: {
-                ...process.env,
-                PLAYWRIGHT_BROWSERS_PATH: downloadDir,
-                HOME: "/tmp",
-            },
-        });
-        const searchPaths = [
-            pathModule.join(downloadDir, "chromium-1208", "chrome-linux64", "chrome"),
-            pathModule.join(downloadDir, "ms-playwright", "chromium-1208", "chrome-linux64", "chrome"),
-            "/tmp/.cache/ms-playwright/chromium-1208/chrome-linux64/chrome",
-        ];
-        for (const p of searchPaths) {
-            console.log("[Scraper] Checking downloaded:", p);
-            if (p && fs.existsSync(p)) {
-                console.log("[Scraper] Downloaded chromium at:", p);
-                return p;
-            }
-        }
-    }
-    catch (e) {
-        console.log("[Scraper] Download failed:", e);
-    }
-    console.log("[Scraper] WARNING: Returning undefined - playwright will use default");
-    return undefined;
-}
-/**
- * Generate MD5 hash of page content
- */
-function generateContentHash(content) {
-    return crypto_1.default.createHash("md5").update(content).digest("hex");
-}
-/**
- * Get category preview (lightweight info from first page)
- */
-async function getCategoryPreview(page, idsubrubro1, baseUrl) {
-    try {
-        const url = `${baseUrl}/buscar.aspx?idsubrubro1=${idsubrubro1}&pag=1`;
-        // Use domcontentloaded + wait for content instead of networkidle
-        await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
-        // Wait for dynamic content to load
-        await page.waitForTimeout(2000);
-        await page.waitForSelector("div:has-text('U$D')", { timeout: 10000 }).catch(() => { });
-        const content = await page.content();
-        const contentHash = generateContentHash(content);
-        const items = await page.locator("a[href*='articulo.aspx?id=']").all();
-        const productIds = [];
-        const seenIds = new Set();
-        for (const item of items) {
-            const href = await item.getAttribute("href");
-            if (href) {
-                const idMatch = href.match(/id=(\d+)/);
-                if (idMatch && !seenIds.has(idMatch[1])) {
-                    seenIds.add(idMatch[1]);
-                    productIds.push(idMatch[1]);
-                }
-            }
-        }
-        let firstPriceUsd;
-        const firstItemText = items[0] ? await items[0].textContent() : null;
-        if (firstItemText) {
-            const priceMatch = firstItemText.match(/U\$D\s+([\d.,]+)/);
-            if (priceMatch) {
-                firstPriceUsd = priceMatch[1];
-            }
-        }
-        return {
-            contentHash,
-            productCount: productIds.length,
-            productIds,
-            firstPriceUsd,
-        };
-    }
-    catch (error) {
-        console.error(`[Incremental] Error getting preview for idsubrubro1=${idsubrubro1}:`, error);
-        return null;
-    }
-}
-/**
- * Get DB connection
- */
-let mongoClient = null;
+const http_client_1 = require("./http-client");
+// ============================================================================
+// PERSISTENT STORE (same singleton pattern as scraper.service)
+// ============================================================================
 let dbInstance = null;
+let mongoClient = null;
 async function getDb() {
-    const MONGO_URI = process.env.MONGO_URI || process.env.MONGODB_URI;
-    const DB_NAME = process.env.DB_NAME || "ecommerce";
-    if (!MONGO_URI) {
-        throw new Error("MONGO_URI is required");
-    }
-    if (!mongoClient) {
-        const { MongoClient } = await Promise.resolve().then(() => __importStar(require("mongodb")));
-        mongoClient = new MongoClient(MONGO_URI, {
-            maxPoolSize: 10,
-            maxIdleTimeMS: 30000,
-            tls: true,
-            tlsAllowInvalidCertificates: true,
-            tlsAllowInvalidHostnames: true,
-        });
-        await mongoClient.connect();
+    if (global.db) {
+        return global.db;
     }
     if (!dbInstance) {
+        const { MongoClient } = await Promise.resolve().then(() => __importStar(require('mongodb')));
+        const MONGO_URI = process.env.MONGO_URI || process.env.MONGODB_URI;
+        const DB_NAME = process.env.DB_NAME || process.env.MONGODB_DB_NAME || 'ecommerce';
+        if (!MONGO_URI)
+            throw new Error('MONGO_URI is required');
+        mongoClient = new MongoClient(MONGO_URI);
+        await mongoClient.connect();
         dbInstance = mongoClient.db(DB_NAME);
     }
     return dbInstance;
 }
+// ============================================================================
+// PRE-CHECK CATEGORIES
+// ============================================================================
 /**
- * Pre-check all categories - parallel version
+ * Fetch one page preview for a category, extracting hash + product count.
  */
-async function preCheckCategories(categories) {
-    const result = {
-        changed: [],
-        unchanged: [],
-        errors: [],
-    };
-    const config = (0, config_1.getScraperConfig)();
-    let chromiumPath;
+async function getCategoryPreview(client, idsubrubro1, baseUrl) {
     try {
-        chromiumPath = await getChromiumExecutable();
+        const url = `${baseUrl}/buscar.aspx?idsubrubro1=${idsubrubro1}&pag=1`;
+        const html = await (0, http_client_1.safeGet)(client, url);
+        const $ = cheerio.load(html);
+        const contentHash = crypto_1.default.createHash('md5').update(html).digest('hex');
+        const productIds = [];
+        $('a[href*="articulo.aspx?id="]').each((_, el) => {
+            const href = $(el).attr('href') || '';
+            const match = href.match(/id=(\d+)/);
+            if (match && !productIds.includes(match[1])) {
+                productIds.push(match[1]);
+            }
+        });
+        // First price for quick comparison
+        let firstPriceUsd = null;
+        const firstLink = $('a[href*="articulo.aspx?id="]').first();
+        const firstText = firstLink.text().trim();
+        const priceMatch = firstText.match(/U\$D\s+([\d.,]+)/);
+        if (priceMatch) {
+            firstPriceUsd = parseFloat(priceMatch[1].replace(',', '.'));
+        }
+        return { contentHash, productCount: productIds.length, productIds, firstPriceUsd };
     }
     catch (e) {
-        console.log("[Scraper] Error getting chromium:", e);
+        console.error('[Pre-check] Error:', e.message);
+        return null;
     }
-    console.log("[Scraper] Using chromium path:", chromiumPath || "default");
-    // Railway fix: kill orphan Chromium processes before launching a new one.
-    // After browser crashes + reconnects, orphaned Chromium processes accumulate
-    // in the OS process table, consuming memory and PIDs. Eventually the kernel
-    // returns EAGAIN on fork and the scraper becomes unrecoverable.
-    try {
-        const { execSync } = require("child_process");
-        execSync("pkill -f chromium 2>/dev/null; true", { stdio: "ignore" });
-        console.log("[Scraper] Cleaned orphan chromium processes");
-    }
-    catch {
-        // pkill returns non-zero when no processes match — that's fine
-    }
-    const browser = await playwright_1.chromium.launch({
-        headless: true,
-        args: [
-            "--no-sandbox",
-            "--disable-setuid-sandbox",
-            "--disable-dev-shm-usage", // Agregado para Railway
-            "--disable-gpu",
-            "--disable-software-rasterizer",
-        ],
-        ...(chromiumPath ? { executablePath: chromiumPath } : {}),
-    });
-    try {
-        console.log("[Incremental] Login for pre-check...");
-        const context = await browser.newContext({
-            viewport: { width: 1024, height: 768 },
-        });
-        const loginPage = await context.newPage();
-        // Use domcontentloaded instead of networkidle - more stable in Railway
-        await loginPage.goto(config.loginUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
-        // Wait a bit for page to settle
-        await loginPage.waitForTimeout(3000);
-        await loginPage.fill(config.selectors.login.emailInputSelector, config.email);
-        await loginPage.fill(config.selectors.login.passwordInputSelector, config.password);
-        await loginPage.click(config.selectors.login.submitButtonSelector);
-        // Wait for navigation after login
-        await loginPage.waitForTimeout(3000);
-        await loginPage.waitForTimeout(2000);
-        try {
-            const branchSelect = loginPage.locator("#ContentPlaceHolder1_ddlSucursal, #ddlSucursal").first();
-            if (await branchSelect.count() > 0) {
-                await branchSelect.selectOption({ index: 1 });
-                await loginPage.waitForTimeout(2000);
-            }
-        }
-        catch {
-            /* ignore */
-        }
-        await loginPage.close();
-        console.log("[Incremental] Pre-checking categories in parallel...");
-        // Process in batches with better error handling
-        for (let i = 0; i < categories.length; i += MAX_PARALLEL_PAGES) {
-            const batch = categories.slice(i, i + MAX_PARALLEL_PAGES);
-            console.log(`[Incremental] Pre-check batch ${Math.floor(i / MAX_PARALLEL_PAGES) + 1}: ${batch.map((c) => c.name).join(", ")}`);
-            const batchPromises = batch.map(async (cat) => {
-                let page = null;
-                try {
-                    page = await context.newPage();
-                    // Set memory limits on page
-                    await page.setViewportSize({ width: 1280, height: 720 });
-                    const preview = await getCategoryPreview(page, cat.idsubrubro1, config.baseUrl);
-                    // Close page immediately after use
-                    try {
-                        await page.close();
-                    }
-                    catch { /* ignore */ }
-                    if (!preview) {
-                        return { categoryId: cat.id, status: "error" };
-                    }
-                    // Compare with previous state
-                    const db = await getDb();
-                    const existing = await db.collection("scraper_state").findOne({ categoryId: cat.id });
-                    const hasChanged = !existing || existing.contentHash !== preview.contentHash;
-                    // Save snapshot
-                    await db.collection("scraper_state").updateOne({ categoryId: cat.id }, {
-                        $set: {
-                            categoryId: cat.id,
-                            idsubrubro1: cat.idsubrubro1,
-                            contentHash: preview.contentHash,
-                            productCount: preview.productCount,
-                            productIds: preview.productIds,
-                            firstPriceUsd: preview.firstPriceUsd,
-                            capturedAt: new Date(),
-                        },
-                    }, { upsert: true });
-                    return {
+}
+/**
+ * Pre-check all categories in parallel batches.
+ * Returns which categories have changed since last scrape.
+ */
+async function preCheckCategories() {
+    const result = { changed: [], unchanged: [], errors: [] };
+    const config = (0, config_1.getScraperConfig)();
+    const client = (0, http_client_1.createHttpClient)(config);
+    const categories = config_1.jotakpCategories.filter((c) => c.idsubrubro1 > 0);
+    console.log(`[Incremental] Pre-checking ${categories.length} categories...`);
+    const MAX_PARALLEL = 2;
+    for (let i = 0; i < categories.length; i += MAX_PARALLEL) {
+        const batch = categories.slice(i, i + MAX_PARALLEL);
+        console.log(`[Incremental] Batch ${Math.floor(i / MAX_PARALLEL) + 1}: ${batch.map((c) => c.name || c.id).join(', ')}`);
+        const batchResults = await Promise.all(batch.map(async (cat) => {
+            try {
+                const preview = await getCategoryPreview(client, cat.idsubrubro1, config.baseUrl);
+                if (!preview)
+                    return { categoryId: cat.id, status: 'error' };
+                const db = await getDb();
+                const existing = await db.collection('scraper_state').findOne({ categoryId: cat.id });
+                const hasChanged = !existing || existing.contentHash !== preview.contentHash;
+                await db.collection('scraper_state').updateOne({ categoryId: cat.id }, {
+                    $set: {
                         categoryId: cat.id,
-                        status: hasChanged ? "changed" : "unchanged",
-                        count: preview.productCount,
-                    };
-                }
-                catch (error) {
-                    // Close page on error
-                    try {
-                        if (page)
-                            await page.close();
-                    }
-                    catch { /* ignore */ }
-                    return { categoryId: cat.id, status: "error" };
-                }
-            });
-            const batchResults = await Promise.all(batchPromises);
-            // Process results
-            for (const r of batchResults) {
-                if (r.status === "changed") {
-                    result.changed.push(r.categoryId);
-                    console.log(`[Incremental] Changed: ${r.categoryId} (count: ${r.count})`);
-                }
-                else if (r.status === "unchanged") {
-                    result.unchanged.push(r.categoryId);
-                    console.log(`[Incremental] Unchanged: ${r.categoryId}`);
-                }
-                else {
-                    result.errors.push(r.categoryId);
-                    console.log(`[Incremental] Error: ${r.categoryId}`);
-                }
+                        idsubrubro1: cat.idsubrubro1,
+                        contentHash: preview.contentHash,
+                        productCount: preview.productCount,
+                        productIds: preview.productIds,
+                        firstPriceUsd: preview.firstPriceUsd,
+                        capturedAt: new Date(),
+                    },
+                }, { upsert: true });
+                return { categoryId: cat.id, status: hasChanged ? 'changed' : 'unchanged' };
             }
+            catch (e) {
+                console.error(`[Incremental] Error pre-checking ${cat.id}:`, e.message);
+                return { categoryId: cat.id, status: 'error' };
+            }
+        }));
+        for (const r of batchResults) {
+            if (r.status === 'changed')
+                result.changed.push(r.categoryId);
+            else if (r.status === 'unchanged')
+                result.unchanged.push(r.categoryId);
+            else
+                result.errors.push(r.categoryId);
         }
-    }
-    finally {
-        await browser.close();
     }
     console.log(`[Incremental] Pre-check complete: ${result.changed.length} changed, ${result.unchanged.length} unchanged, ${result.errors.length} errors`);
     return result;
 }
+// ============================================================================
+// RUN INCREMENTAL SCRAPER
+// ============================================================================
 /**
- * Run incremental scraper with auto resume
- * 1. Pre-check all categories (parallel)
- * 2. Only scrape changed ones (parallel)
- * 3. Update states
+ * Run the full incremental scraper:
+ *   1. Pre-check categories to detect changes.
+ *   2. Scrape ALL categories (for stock updates) via runScraper().
+ *   3. Return aggregated results.
  */
 async function runIncrementalScraper(forceFullScrape = false) {
-    console.log("[Incremental] Starting incremental scraper (parallel)...");
-    // Get all subcategories
-    const categories = config_1.jotakpCategories
-        .filter((c) => c.idsubrubro1 > 0)
-        .map((c) => ({ id: c.id, idsubrubro1: c.idsubrubro1, name: c.name }));
+    console.log('[Incremental] Starting incremental scraper...');
+    const categories = config_1.jotakpCategories.filter((c) => c.idsubrubro1 > 0);
+    // Step 1: Pre-check
     let preCheckResult;
     if (forceFullScrape) {
-        console.log("[Incremental] Force full scrape - skipping pre-check");
-        preCheckResult = {
-            changed: categories.map((c) => c.id),
-            unchanged: [],
-            errors: [],
-        };
+        console.log('[Incremental] Force full scrape — skipping pre-check');
+        preCheckResult = { changed: categories.map((c) => c.id), unchanged: [], errors: [] };
     }
     else {
-        preCheckResult = await preCheckCategories(categories);
+        preCheckResult = await preCheckCategories();
     }
-    console.log(`[Incremental] Pre-check result: ${preCheckResult.changed.length} changed, ${preCheckResult.unchanged.length} unchanged`);
-    // SIEMPRE scrapear - aunque no haya cambios en contenido
-    // Esto es para actualizar el STOCK que cambia seguido
-    const allCategoryIds = categories.map(c => c.id);
-    console.log("[Incremental] Processing ALL categories to update stock...");
-    // Filter categories to process - SIEMPRE todas (para atualizar stock)
-    const categoriesToScrape = allCategoryIds;
-    console.log(`[Incremental] Scraping ${categoriesToScrape.length} categories (ALL - stock update)...`);
-    // Scrape changed categories in parallel
-    const scrapeResults = {
-        created: 0,
-        updated: 0,
-        errors: [],
-        durationMs: 0,
-    };
+    console.log(`[Incremental] Pre-check: ${preCheckResult.changed.length} changed, ${preCheckResult.unchanged.length} unchanged`);
+    // Step 2: Scrape ALL categories (to update stock)
+    console.log('[Incremental] Scraping all categories for stock update...');
+    const scrapeResults = { created: 0, updated: 0, errors: [], durationMs: 0 };
     const startTime = Date.now();
-    for (let i = 0; i < categoriesToScrape.length; i += MAX_PARALLEL_PAGES) {
-        const batch = categoriesToScrape.slice(i, i + MAX_PARALLEL_PAGES);
-        console.log(`[Incremental] Scraping batch ${Math.floor(i / MAX_PARALLEL_PAGES) + 1}: ${batch.join(", ")}`);
-        const batchPromises = batch.map(async (categoryId) => {
+    const allCategoryIds = categories.map((c) => c.id);
+    const MAX_PARALLEL = 2;
+    for (let i = 0; i < allCategoryIds.length; i += MAX_PARALLEL) {
+        const batch = allCategoryIds.slice(i, i + MAX_PARALLEL);
+        console.log(`[Incremental] Scraping batch ${Math.floor(i / MAX_PARALLEL) + 1}: ${batch.join(', ')}`);
+        const batchResults = await Promise.all(batch.map(async (categoryId) => {
             try {
-                const result = await (0, scraper_service_1.runScraper)({
-                    categoryId,
-                    source: "incremental",
-                });
+                const result = await (0, scraper_service_1.runScraper)({ categoryId, source: 'incremental' });
                 // Update state
-                const cat = config_1.jotakpCategories.find((c) => c.id === categoryId);
-                if (cat) {
-                    const db = await getDb();
-                    await db.collection("scraper_state").updateOne({ categoryId: cat.id }, {
-                        $set: {
-                            lastScrapeAt: new Date(),
-                        },
-                    });
-                }
+                const db = await getDb();
+                await db.collection('scraper_state').updateOne({ categoryId }, { $set: { lastScrapeAt: new Date() } });
                 return result;
             }
-            catch (error) {
-                console.error(`[Incremental] Error scraping ${categoryId}:`, error);
-                return {
-                    created: 0,
-                    updated: 0,
-                    errors: [`Error scraping ${categoryId}`],
-                    success: false,
-                };
+            catch (e) {
+                console.error(`[Incremental] Error scraping ${categoryId}:`, e.message);
+                return { created: 0, updated: 0, errors: [`Error scraping ${categoryId}: ${e.message}`], success: false };
             }
-        });
-        const batchResults = await Promise.all(batchPromises);
+        }));
         for (const r of batchResults) {
-            scrapeResults.created += r.created;
-            scrapeResults.updated += r.updated;
-            scrapeResults.errors.push(...r.errors);
+            scrapeResults.created += r.created || 0;
+            scrapeResults.updated += r.updated || 0;
+            if (r.errors) {
+                scrapeResults.errors.push(...r.errors);
+            }
         }
     }
     scrapeResults.durationMs = Date.now() - startTime;
-    // ============================================================
-    // MARK DISCONTINUED
-    // ============================================================
-    try {
-        console.log(`[Incremental] Scraping completed: ${scrapeResults.created} created, ${scrapeResults.updated} updated`);
-    }
-    catch (e) {
-        console.log("[Incremental] Error marking discontinued:", e);
-    }
+    console.log(`[Incremental] Done: ${scrapeResults.created} created, ${scrapeResults.updated} updated`);
     return {
         success: true,
         preCheck: {
