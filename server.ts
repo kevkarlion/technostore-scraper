@@ -1,7 +1,6 @@
 import 'dotenv/config';
 import express from 'express';
 import { MongoClient, ObjectId } from 'mongodb';
-import cron from 'node-cron';
 
 // ===============================================
 // TIMEZONE HELPERS - Argentina (UTC-3)
@@ -237,13 +236,11 @@ let scraperRunning = false;
 
 /**
  * Marca el scraper como "en ejecución" y devuelve handle para liberar.
- * Si ya está corriendo, lanza 409 (HTTP) o skipea (cron).
+ * Si ya está corriendo, lanza 409.
  */
-function tryAcquireScraper(source: 'http' | 'cron'): (() => void) | null {
+function tryAcquireScraper(): (() => void) {
   if (scraperRunning) {
-    if (source === 'http') throw Object.assign(new Error('Scraper is already running'), { statusCode: 409 });
-    console.log('[Mutex] Scraper already running — skipping cron tick');
-    return null; // cron: skip
+    throw Object.assign(new Error('Scraper is already running'), { statusCode: 409 });
   }
   scraperRunning = true;
   console.log('[Mutex] Lock acquired');
@@ -283,8 +280,7 @@ app.get('/debug/mongo-test', async (req, res) => {
 app.post('/run', async (req, res) => {
   let release: (() => void) | null = null;
   try {
-    release = tryAcquireScraper('http');
-    if (!release) { res.status(409).json({ error: 'Scraper is already running' }); return; }
+    release = tryAcquireScraper();
     const forceFullScrape = req.query.force === 'true';
     res.json({ success: true, message: 'Scrape started in background', startedAt: new Date().toISOString() });
     const { result, executionId } = await executionRecorder.recordExecution(
@@ -341,8 +337,7 @@ app.post('/scraper/run', async (req, res) => {
   let release: (() => void) | null = null;
   const categoryId = req.body.categoryId;
   try {
-    release = tryAcquireScraper('http');
-    if (!release) { res.status(409).json({ error: 'Scraper is already running' }); return; }
+    release = tryAcquireScraper();
     const { idsubrubro1, source } = req.body;
     res.json({ success: true, message: 'Scrape started in background', categoryId, startedAt: new Date().toISOString() });
     console.log(`[Scraper] Background run for ${categoryId}...`);
@@ -358,8 +353,7 @@ app.post('/scraper/run', async (req, res) => {
 
 // Endpoint para testar UNA sola categoría
 app.post('/scraper/test-category', async (req, res) => {
-  const release = tryAcquireScraper('http');
-  if (!release) return;
+  const release = tryAcquireScraper();
   try {
     const { categoryId } = req.body;
     if (!categoryId) {
@@ -382,8 +376,7 @@ app.post('/scraper/test-category', async (req, res) => {
 app.post('/scraper/incremental', async (req, res) => {
   let release: (() => void) | null = null;
   try {
-    release = tryAcquireScraper('http');
-    if (!release) { res.status(409).json({ error: 'Scraper is already running' }); return; }
+    release = tryAcquireScraper();
     const { forceFullScrape } = req.body;
     res.json({ success: true, message: 'Incremental scrape started in background', startedAt: new Date().toISOString() });
     const { result, executionId } = await executionRecorder.recordExecution(
@@ -444,67 +437,4 @@ app.post('/debug/check-products', async (req, res) => {
 
 app.listen(PORT, () => { 
   console.log('[Server] Scraper server on port', PORT);
-  
-  // ===============================================
-  // SCHEDULER - Argentina timezone (UTC-3)
-  // ===============================================
-  // Weekdays (Mon-Fri): every 4h from 7am to 19pm
-  // Saturday: every 4h from 7am to 15pm
-  // Sunday: no scrape
-  const TIMEZONE = 'America/Argentina/Buenos_Aires';
-
-  const schedules = [
-    { cron: '0 7,11,15,19 * * 1-5', label: 'weekdays (7-19h every 4h)' },
-    { cron: '0 7,11,15 * * 6', label: 'saturday (7-15h every 4h)' },
-  ];
-
-  for (const { cron: expr, label } of schedules) {
-    if (!cron.validate(expr)) {
-      console.error(`[Cron] Invalid schedule for ${label}: ${expr}`);
-      continue;
-    }
-    cron.schedule(expr, async () => {
-      const release = tryAcquireScraper('cron');
-      if (!release) return;
-      console.log(`[Cron] Running scheduled incremental scrape (${label})...`);
-      const startTime = Date.now();
-      try {
-        const { result, executionId } = await executionRecorder.recordExecution(
-          'cron',
-          () => runIncrementalScraper(false),
-          {
-            extractStats: (r: any) => ({
-              productsFound: (r.scrapeResult?.created || 0) + (r.scrapeResult?.updated || 0),
-              productsCreated: r.scrapeResult?.created || 0,
-              productsUpdated: r.scrapeResult?.updated || 0,
-              productsUnavailable: 0,
-              errors: r.scrapeResult?.errors || [],
-              createdProductIds: r.scrapeResult?.createdIds || [],
-              updatedProductIds: r.scrapeResult?.updatedIds || [],
-            }),
-          }
-        );
-        void runPostExecutionHooks(executionId);
-        const duration = Math.round((Date.now() - startTime) / 1000);
-        console.log(`[Cron] Completed in ${duration}s (${label}) - Created: ${result.scrapeResult?.created}, Updated: ${result.scrapeResult?.updated}`);
-      } catch (error) {
-        console.error('[Cron] Error:', error);
-      } finally {
-        release();
-      }
-    }, { timezone: TIMEZONE });
-    console.log(`[Cron] Active: ${expr} (${label})`);
-  }
-});
-
-// Endpoints para controlar el scheduler
-app.get('/scheduler/status', (req, res) => {
-  res.json({ 
-    schedules: [
-      { cron: '0 7,11,15,19 * * 1-5', label: 'weekdays (7-19h every 4h)' },
-      { cron: '0 7,11,15 * * 6', label: 'saturday (7-15h every 4h)' },
-    ],
-    timezone: 'America/Argentina/Buenos_Aires',
-    enabled: true 
-  });
 });
