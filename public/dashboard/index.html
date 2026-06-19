@@ -793,6 +793,7 @@
               <th data-sort="status">Estado</th>
               <th class="col-products">Productos</th>
               <th class="col-changes">Cambios</th>
+              <th>Discontinuados</th>
               <th class="col-errors">Errores</th>
               <th>Origen</th>
               <th class="actions">Acciones</th>
@@ -808,6 +809,7 @@
                   ${e.productsCreated != null ? `+${e.productsCreated}` : (e.productsFound ?? 0).toLocaleString()} / ${e.productsUpdated != null ? `~${e.productsUpdated}` : '—'}
                 </td>
                 <td class="col-changes">${((e.createdProductIds?.length || 0) + (e.updatedProductIds?.length || 0)).toLocaleString()}</td>
+                <td>${(e.productsUnavailable ?? 0).toLocaleString()}</td>
                 <td class="col-errors">${e.errorCount ?? 0}</td>
                 <td>${escapeHtml(e.triggerSource || '—')}</td>
                 <td class="actions"><a href="#" data-exec-id="${escapeHtml(e._id)}">Ver</a></td>
@@ -867,7 +869,7 @@
             <div class="detail-row"><span class="label">Productos Actualizados</span><span class="value">${(e.productsUpdated ?? 0).toLocaleString()}</span></div>
             <div class="detail-row"><span class="label">Productos No Disponibles</span><span class="value">${(e.productsUnavailable ?? 0).toLocaleString()}</span></div>
             <div class="detail-row"><span class="label">Cantidad de Errores</span><span class="value">${e.errorCount ?? 0}</span></div>
-            <div class="detail-row"><span class="label">Categorías Scrapeadas</span><span class="value">${(e.categoriesScraped || []).length}</span></div>
+            <div class="detail-row"><span class="label">Categorías Scrapeadas</span><span class="value">${(e.categoriesScraped || []).length} de 127</span></div>
             <div class="detail-row" style="grid-column: 1 / -1"><span class="label">ID de Ejecución</span><span class="value"><code>${escapeHtml(e._id)}</code></span></div>
           </div>
 

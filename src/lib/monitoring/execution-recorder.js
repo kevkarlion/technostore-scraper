@@ -59,7 +59,7 @@ function createExecutionRecorder(config) {
                 productsUnavailable: stats.productsUnavailable,
                 createdProductIds: stats.createdProductIds,
                 updatedProductIds: stats.updatedProductIds,
-                categoriesScraped: [],
+                categoriesScraped: stats.categoriesScraped || [],
                 errorCount: stats.errors.length,
                 errors: stats.errors.slice(0, 50), // cap at 50 errors
                 logEntries: logEntries.slice(-200), // keep last 200 log lines

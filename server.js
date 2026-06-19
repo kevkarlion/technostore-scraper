@@ -295,10 +295,11 @@ app.post('/run', async (req, res) => {
                 productsFound: (r.scrapeResult?.created || 0) + (r.scrapeResult?.updated || 0),
                 productsCreated: r.scrapeResult?.created || 0,
                 productsUpdated: r.scrapeResult?.updated || 0,
-                productsUnavailable: 0,
+                productsUnavailable: r.scrapeResult?.discontinued || 0,
                 errors: r.scrapeResult?.errors || [],
                 createdProductIds: r.scrapeResult?.createdIds || [],
                 updatedProductIds: r.scrapeResult?.updatedIds || [],
+                categoriesScraped: [...(r.preCheck?.changed || []), ...(r.preCheck?.errors || [])],
             }),
         });
         void runPostExecutionHooks(executionId);
@@ -440,10 +441,11 @@ app.post('/scraper/incremental', async (req, res) => {
                 productsFound: (r.scrapeResult?.created || 0) + (r.scrapeResult?.updated || 0),
                 productsCreated: r.scrapeResult?.created || 0,
                 productsUpdated: r.scrapeResult?.updated || 0,
-                productsUnavailable: 0,
+                productsUnavailable: r.scrapeResult?.discontinued || 0,
                 errors: r.scrapeResult?.errors || [],
                 createdProductIds: r.scrapeResult?.createdIds || [],
                 updatedProductIds: r.scrapeResult?.updatedIds || [],
+                categoriesScraped: [...(r.preCheck?.changed || []), ...(r.preCheck?.errors || [])],
             }),
         });
         void runPostExecutionHooks(executionId);

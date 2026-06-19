@@ -170,7 +170,7 @@ export async function preCheckCategories(): Promise<{
 export async function runIncrementalScraper(forceFullScrape: boolean = false): Promise<{
   success: boolean;
   preCheck: { total: number; changed: string[]; unchanged: string[]; errors: string[] };
-  scrapeResult?: { created: number; updated: number; createdIds: string[]; updatedIds: string[]; errors: string[]; durationMs: number };
+  scrapeResult?: { created: number; updated: number; createdIds: string[]; updatedIds: string[]; errors: string[]; durationMs: number; discontinued: number };
   timestamp: Date;
 }> {
   console.log('[Incremental] Starting incremental scraper...');
@@ -202,20 +202,22 @@ export async function runIncrementalScraper(forceFullScrape: boolean = false): P
     `[Incremental] Pre-check: ${preCheckResult.changed.length} changed, ${preCheckResult.unchanged.length} unchanged, ${preCheckResult.errors.length} errors — scraping ${toScrape.length} categories`,
   );
 
-  const scrapeResults = { created: 0, updated: 0, createdIds: [] as string[], updatedIds: [] as string[], errors: [] as string[], durationMs: 0 };
+  const scrapeResults = { created: 0, updated: 0, createdIds: [] as string[], updatedIds: [] as string[], errors: [] as string[], durationMs: 0, discontinued: 0 };
   const startTime = Date.now();
   const MAX_PARALLEL = 4;
 
   // Step 2a: Mark discontinued + update timestamp for UNCHANGED categories
   // Uses the product IDs captured during pre-check (already in scraper_state).
   const db = await getDb();
+  let totalDiscontinued = 0;
   for (const categoryId of preCheckResult.unchanged) {
     try {
       const state = await db.collection('scraper_state').findOne({ categoryId });
       if (state?.productIds?.length > 0) {
-        const discontinued = await markDiscontinuedFromIds(categoryId, state.productIds);
-        if (discontinued > 0) {
-          console.log(`[Incremental] Marked ${discontinued} discontinued in unchanged ${categoryId}`);
+        const discontinuedCount = await markDiscontinuedFromIds(categoryId, state.productIds);
+        totalDiscontinued += discontinuedCount;
+        if (discontinuedCount > 0) {
+          console.log(`[Incremental] Marked ${discontinuedCount} discontinued in unchanged ${categoryId}`);
         }
       }
       await db.collection('scraper_state').updateOne(
@@ -226,6 +228,7 @@ export async function runIncrementalScraper(forceFullScrape: boolean = false): P
       console.error(`[Incremental] Error updating unchanged ${categoryId}:`, e.message);
     }
   }
+  scrapeResults.discontinued = totalDiscontinued;
 
   // Step 2b: Scrape only CHANGED + ERROR categories, sharing the authenticated session
   for (let i = 0; i < toScrape.length; i += MAX_PARALLEL) {

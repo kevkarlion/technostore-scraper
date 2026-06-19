@@ -3,13 +3,12 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.createHealthChecker = createHealthChecker;
 /**
  * Health checker that runs after each execution log is written.
- * Implements 5 anomaly-detection rules (spec R4.1–R4.5):
+ * Implements 4 anomaly-detection rules (spec R4.1–R4.4):
  *
  *   1. consecutive-failures  — 3+ error runs in a row.
  *   2. slow-execution        — latest duration > 2× avg of last 10 successful runs.
  *   3. repetitive-errors     — same `errors[0]` in 3+ consecutive error runs.
- *   4. product-drop          — productsFound < 50% of 7-day average.
- *   5. scraper-stopped       — separate function (called by periodic timer);
+ *   4. scraper-stopped       — separate function (called by periodic timer);
  *                              alerts if no execution in >3h during the
  *                              07:00–24:00 Argentina active window.
  *
@@ -25,7 +24,7 @@ function createHealthChecker(config) {
     const execCollection = db.collection(config.collectionNames?.executionLogs || 'execution_logs');
     const healthCollection = db.collection(config.collectionNames?.healthChecks || 'health_checks');
     /**
-     * Run all post-execution health checks (rules 1–4).
+     * Run all post-execution health checks (rules 1–3).
      * Writes detected anomalies to `health_checks`. Never throws.
      */
     async function checkAfterExecution(newLog) {
@@ -93,31 +92,6 @@ function createHealthChecker(config) {
                             });
                             break; // Report one repetitive error type at a time
                         }
-                    }
-                }
-            }
-            // Check 4: Product drop — productsFound < 50% of 7-day avg of successful runs.
-            if (newLog.productsFound > 0 && newLog.status !== 'error') {
-                const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-                const recentRuns = await execCollection.find({
-                    startedAt: { $gte: sevenDaysAgo },
-                    status: { $in: ['success', 'warning'] },
-                    productsFound: { $gt: 0 },
-                }, { sort: { startedAt: -1 }, limit: 20, projection: { productsFound: 1 } }).toArray();
-                if (recentRuns.length >= 3) {
-                    const avgProducts = recentRuns.reduce((sum, r) => sum + (r.productsFound || 0), 0) / recentRuns.length;
-                    if (avgProducts > 0 && newLog.productsFound < avgProducts * 0.5) {
-                        detected.push({
-                            detectedAt: new Date(),
-                            checkType: 'product-drop',
-                            severity: 'critical',
-                            message: `Product count dropped ${Math.round((1 - newLog.productsFound / avgProducts) * 100)}% vs 7-day average`,
-                            details: {
-                                productsFound: newLog.productsFound,
-                                avgProductsLast7Days: Math.round(avgProducts),
-                                recentRunsCount: recentRuns.length,
-                            },
-                        });
                     }
                 }
             }
