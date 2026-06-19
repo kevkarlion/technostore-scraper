@@ -169,12 +169,23 @@ async function preCheckCategories() {
 /**
  * Run the full incremental scraper:
  *   1. Pre-check categories to detect changes.
- *   2. Scrape ALL categories (for stock updates) via runScraper().
+ *   2. Scrape only changed categories (pre-check product IDs used for discontinued).
  *   3. Return aggregated results.
+ *
+ * Session optimization: creates ONE authenticated HTTP session shared across all
+ * categories, instead of logging in 127 times.
  */
 async function runIncrementalScraper(forceFullScrape = false) {
     console.log('[Incremental] Starting incremental scraper...');
+    const config = (0, config_1.getScraperConfig)();
     const categories = config_1.jotakpCategories.filter((c) => c.idsubrubro1 > 0);
+    // Create ONE shared HTTP client for the entire run
+    const sharedHttp = (0, http_client_1.createHttpClient)(config);
+    // Login ONCE — this populates the cookie jar on sharedHttp
+    const { ScraperService } = await Promise.resolve().then(() => __importStar(require('./scraper.service')));
+    const bootScraper = new ScraperService(config, {}, sharedHttp);
+    await bootScraper.login();
+    console.log('[Incremental] Shared session established for all categories');
     // Step 1: Pre-check
     let preCheckResult;
     if (forceFullScrape) {
@@ -184,21 +195,38 @@ async function runIncrementalScraper(forceFullScrape = false) {
     else {
         preCheckResult = await preCheckCategories();
     }
-    console.log(`[Incremental] Pre-check: ${preCheckResult.changed.length} changed, ${preCheckResult.unchanged.length} unchanged`);
-    // Step 2: Scrape ALL categories (to update stock)
-    console.log('[Incremental] Scraping all categories for stock update...');
+    const toScrape = [...preCheckResult.changed, ...preCheckResult.errors];
+    console.log(`[Incremental] Pre-check: ${preCheckResult.changed.length} changed, ${preCheckResult.unchanged.length} unchanged, ${preCheckResult.errors.length} errors — scraping ${toScrape.length} categories`);
     const scrapeResults = { created: 0, updated: 0, createdIds: [], updatedIds: [], errors: [], durationMs: 0 };
     const startTime = Date.now();
-    const allCategoryIds = categories.map((c) => c.id);
     const MAX_PARALLEL = 4;
-    for (let i = 0; i < allCategoryIds.length; i += MAX_PARALLEL) {
-        const batch = allCategoryIds.slice(i, i + MAX_PARALLEL);
+    // Step 2a: Mark discontinued + update timestamp for UNCHANGED categories
+    // Uses the product IDs captured during pre-check (already in scraper_state).
+    const db = await getDb();
+    for (const categoryId of preCheckResult.unchanged) {
+        try {
+            const state = await db.collection('scraper_state').findOne({ categoryId });
+            if (state?.productIds?.length > 0) {
+                const discontinued = await markDiscontinuedFromIds(categoryId, state.productIds);
+                if (discontinued > 0) {
+                    console.log(`[Incremental] Marked ${discontinued} discontinued in unchanged ${categoryId}`);
+                }
+            }
+            await db.collection('scraper_state').updateOne({ categoryId }, { $set: { lastScrapeAt: new Date() } });
+        }
+        catch (e) {
+            console.error(`[Incremental] Error updating unchanged ${categoryId}:`, e.message);
+        }
+    }
+    // Step 2b: Scrape only CHANGED + ERROR categories, sharing the authenticated session
+    for (let i = 0; i < toScrape.length; i += MAX_PARALLEL) {
+        const batch = toScrape.slice(i, i + MAX_PARALLEL);
         console.log(`[Incremental] Scraping batch ${Math.floor(i / MAX_PARALLEL) + 1}: ${batch.join(', ')}`);
         const batchResults = await Promise.all(batch.map(async (categoryId) => {
             try {
-                const result = await (0, scraper_service_1.runScraper)({ categoryId, source: 'incremental' });
+                // Pass the shared authenticated HTTP client + skipLogin
+                const result = await (0, scraper_service_1.runScraper)({ categoryId, source: 'incremental', skipLogin: true }, sharedHttp);
                 // Update state
-                const db = await getDb();
                 await db.collection('scraper_state').updateOne({ categoryId }, { $set: { lastScrapeAt: new Date() } });
                 return result;
             }
@@ -220,7 +248,7 @@ async function runIncrementalScraper(forceFullScrape = false) {
         }
     }
     scrapeResults.durationMs = Date.now() - startTime;
-    console.log(`[Incremental] Done: ${scrapeResults.created} created, ${scrapeResults.updated} updated`);
+    console.log(`[Incremental] Done: ${scrapeResults.created} created, ${scrapeResults.updated} updated (scraped ${toScrape.length}/${categories.length} categories)`);
     return {
         success: true,
         preCheck: {
@@ -232,4 +260,19 @@ async function runIncrementalScraper(forceFullScrape = false) {
         scrapeResult: scrapeResults,
         timestamp: new Date(),
     };
+}
+/**
+ * Mark products as discontinued if they're NOT in the given active IDs list.
+ * Uses the same logic as productRepository.markDiscontinued but directly.
+ */
+async function markDiscontinuedFromIds(categoryId, activeExternalIds) {
+    const db = await getDb();
+    const collection = db.collection('products');
+    const result = await collection.updateMany({
+        categories: categoryId,
+        supplier: 'jotakp',
+        externalId: { $nin: activeExternalIds },
+        status: { $ne: 'discontinued' },
+    }, { $set: { status: 'discontinued', discontinuedAt: new Date(), updatedAt: new Date() } });
+    return result.modifiedCount;
 }

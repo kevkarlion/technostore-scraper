@@ -191,10 +191,11 @@ export class ScraperService {
   private categories: ScraperCategory[];
   private loggedIn = false;
 
-  constructor(config?: ScraperConfig, request?: ScraperRunRequest) {
+  constructor(config?: ScraperConfig, request?: ScraperRunRequest, http?: AxiosInstance) {
     this.config = config || getScraperConfig();
     this.request = request || {};
-    this.http = createHttpClient(this.config);
+    // Allow injecting a pre-authenticated HTTP client (shared session)
+    this.http = http || createHttpClient(this.config);
     this.categories = [];
 
     // Build category list from request or all
@@ -262,20 +263,9 @@ export class ScraperService {
         await safePost(this.http, this.config.loginUrl, simpleBody);
       }
 
-      // Try to select branch if present
-      try {
-        const afterLoginHtml = await safeGet(this.http, '/default.aspx');
-        const $branch = cheerio.load(afterLoginHtml);
-        const branchSelect = $branch('select[id*="ddlSucursal"]');
-        if (branchSelect.length > 0) {
-          const branchName = branchSelect.attr('name') || 'ddlSucursal';
-          const branchBody: Record<string, string> = {};
-          branchBody[branchName] = branchSelect.find('option').eq(1).attr('value') || '1';
-          await safePost(this.http, '/default.aspx', branchBody);
-        }
-      } catch {
-        // Branch selection is optional
-      }
+      // Legacy branch selection removed — /default.aspx no longer exists
+      // on the supplier's server (returns 404), and branch selection
+      // was only needed for the old ASP.NET WebForms login flow.
 
       this.loggedIn = true;
       console.log('[Scraper] Login successful');
@@ -378,36 +368,26 @@ export class ScraperService {
 
       if (products.length === 0) break;
 
-      // Get detail for each product — safeGet() already has internal delay
-      for (const product of products) {
-        try {
-          await this.enrichProductDetail(product);
-          allProducts.push(product);
-          allIds.push(product.externalId);
-        } catch (e: any) {
-          console.log(`[Scraper] Error enriching product ${product.externalId}: ${e.message}`);
-          allProducts.push(product);
-          allIds.push(product.externalId);
-        }
+      // Enrich products in parallel batches (5 concurrent)
+      const CONCURRENT_ENRICH = 5;
+      for (let i = 0; i < products.length; i += CONCURRENT_ENRICH) {
+        const batch = products.slice(i, i + CONCURRENT_ENRICH);
+        await Promise.all(
+          batch.map(async (product) => {
+            try {
+              await this.enrichProductDetail(product);
+              allProducts.push(product);
+              allIds.push(product.externalId);
+            } catch (e: any) {
+              console.log(`[Scraper] Error enriching product ${product.externalId}: ${e.message}`);
+              allProducts.push(product);
+              allIds.push(product.externalId);
+            }
+          }),
+        );
       }
 
       if (!hasMore) break;
-    }
-
-    // Also fetch images for each product (now that we have enriched data)
-    for (const product of allProducts) {
-      if (product.imageUrls.length > 0) {
-        try {
-          const cloudUrls = await uploadProductImages(
-            product.imageUrls,
-            this.config.supplier,
-            product.externalId,
-          );
-          product.cloudinaryUrls = cloudUrls;
-        } catch {
-          // Image upload is optional
-        }
-      }
     }
 
     return { products: allProducts, externalIds: allIds };
@@ -479,8 +459,10 @@ export class ScraperService {
     const errors: string[] = [];
 
     try {
-      // Login first
-      await this.login();
+      // Login first (skip if using a pre-authenticated shared session)
+      if (!this.request.skipLogin) {
+        await this.login();
+      }
 
       // Process each category
       for (const cat of this.categories) {
@@ -500,6 +482,8 @@ export class ScraperService {
                 currency: 'USD',
                 stock: product.stock,
                 sku: product.sku,
+                // If cloudinary URLs already exist from a previous upload, prefer them.
+                // Otherwise store raw supplier URLs — will be upgraded after image upload below.
                 imageUrls: product.cloudinaryUrls && product.cloudinaryUrls.length > 0
                   ? product.cloudinaryUrls
                   : product.imageUrls,
@@ -512,6 +496,34 @@ export class ScraperService {
               if (result.updated) { updated++; updatedIds.push(product.externalId); }
             } catch (e: any) {
               errors.push(`Error saving product ${product.externalId}: ${e.message}`);
+            }
+          }
+
+          // Upload images to Cloudinary after upsert, so we know if it's a create or update.
+          // - Full scrape (source !== 'incremental'): upload for ALL products with images.
+          // - Incremental: upload ONLY for newly created products (existing products keep
+          //   their Cloudinary URLs from the first full scrape).
+          const isFullScrape = this.request.source !== 'incremental';
+          for (const product of products) {
+            if (product.imageUrls.length === 0) continue;
+            if (!isFullScrape && !createdIds.includes(product.externalId)) continue;
+
+            try {
+              const cloudUrls = await uploadProductImages(
+                product.imageUrls,
+                this.config.supplier,
+                product.externalId,
+              );
+              product.cloudinaryUrls = cloudUrls;
+
+              // Update the DB record with Cloudinary URLs
+              const db = await getDb();
+              await db.collection('products').updateOne(
+                { externalId: product.externalId, supplier: 'jotakp' },
+                { $set: { imageUrls: cloudUrls, updatedAt: new Date() } },
+              );
+            } catch {
+              // Image upload is optional — keep raw supplier URLs in DB
             }
           }
 
@@ -584,7 +596,7 @@ export class ScraperService {
  *   runScraper({ categoryId: 'discos-ssd', source: 'incremental' })
  *   runScraper()  // all categories
  */
-export async function runScraper(request?: ScraperRunRequest): Promise<ScraperResult> {
-  const scraper = new ScraperService(undefined, request);
+export async function runScraper(request?: ScraperRunRequest, http?: AxiosInstance): Promise<ScraperResult> {
+  const scraper = new ScraperService(undefined, request, http);
   return scraper.run();
 }

@@ -360,7 +360,7 @@ app.post('/scraper/run', async (req, res) => {
             release();
     }
 });
-// Endpoint para testar UNA sola categoría
+// Endpoint para testar una categoría o grupo padre (ej: "seguridad" → todas sus hijas)
 app.post('/scraper/test-category', async (req, res) => {
     const release = tryAcquireScraper();
     try {
@@ -368,11 +368,58 @@ app.post('/scraper/test-category', async (req, res) => {
         if (!categoryId) {
             return res.status(400).json({ error: "categoryId es requerido" });
         }
-        console.log(`[Test] Scraping category: ${categoryId}`);
-        // Importar y ejecutar runScraper directamente para una categoría
+        // Buscar la categoría
+        const cat = index_1.jotakpCategories.find((c) => c.id === categoryId);
+        if (!cat) {
+            return res.status(404).json({ error: `Categoría "${categoryId}" no encontrada` });
+        }
+        // Si es padre (idsubrubro1 === 0), expandir a todas sus hijas
+        let targetIds;
+        if (cat.idsubrubro1 === 0) {
+            targetIds = index_1.jotakpCategories
+                .filter((c) => c.parentId === categoryId && c.idsubrubro1 > 0)
+                .map((c) => c.id);
+            console.log(`[Test] Parent category "${categoryId}" → ${targetIds.length} subcategories: ${targetIds.join(', ')}`);
+        }
+        else {
+            targetIds = [categoryId];
+        }
+        // Importar runScraper
         const { runScraper } = await Promise.resolve().then(() => __importStar(require('./src/lib/scraper/scraper.service')));
-        const result = await runScraper({ categoryId, source: 'test' });
-        return res.json(result);
+        // Correr en batches de 4 (como el incremental) y agregar resultados
+        const aggregated = { created: 0, updated: 0, createdIds: [], updatedIds: [], errors: [], durationMs: 0 };
+        const startTime = Date.now();
+        const MAX_PARALLEL = 4;
+        for (let i = 0; i < targetIds.length; i += MAX_PARALLEL) {
+            const batch = targetIds.slice(i, i + MAX_PARALLEL);
+            console.log(`[Test] Batch ${Math.floor(i / MAX_PARALLEL) + 1}: ${batch.join(', ')}`);
+            const batchResults = await Promise.all(batch.map(async (id) => {
+                try {
+                    const result = await runScraper({ categoryId: id, source: 'test' });
+                    return result;
+                }
+                catch (e) {
+                    return { created: 0, updated: 0, createdIds: [], updatedIds: [], errors: [`Error scraping ${id}: ${e.message}`], success: false };
+                }
+            }));
+            for (const r of batchResults) {
+                aggregated.created += r.created || 0;
+                aggregated.updated += r.updated || 0;
+                if (r.createdIds)
+                    aggregated.createdIds.push(...r.createdIds);
+                if (r.updatedIds)
+                    aggregated.updatedIds.push(...r.updatedIds);
+                if (r.errors)
+                    aggregated.errors.push(...r.errors);
+            }
+        }
+        aggregated.durationMs = Date.now() - startTime;
+        return res.json({
+            success: aggregated.errors.length === 0,
+            categories: targetIds.length,
+            ...aggregated,
+            timestamp: new Date(),
+        });
     }
     catch (error) {
         console.error("[Test] Error:", error.message);

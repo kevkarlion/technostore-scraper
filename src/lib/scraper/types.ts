@@ -120,6 +120,8 @@ export interface ScraperRunRequest {
   categoryId?: string;
   idsubrubro1?: number;
   source?: string;
+  /** Skip login — use when passing a pre-authenticated HTTP client */
+  skipLogin?: boolean;
 }
 
 /**
