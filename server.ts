@@ -430,11 +430,11 @@ app.post('/scraper/incremental', async (req, res) => {
   let release: (() => void) | null = null;
   try {
     release = tryAcquireScraper();
-    const { forceFullScrape, categoryId } = req.body;
+    const { forceFullScrape, categoryId, skipExistingCheck } = req.body;
     res.json({ success: true, message: 'Incremental scrape started in background', categoryId, startedAt: new Date().toISOString() });
     const { result, executionId } = await executionRecorder.recordExecution(
       'http',
-      () => runIncrementalScraper(forceFullScrape, categoryId),
+      () => runIncrementalScraper(forceFullScrape, categoryId, skipExistingCheck),
       {
         extractStats: (r: any) => ({
           productsFound: (r.scrapeResult?.created || 0) + (r.scrapeResult?.updated || 0),

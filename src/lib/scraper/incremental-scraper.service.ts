@@ -180,7 +180,7 @@ export async function preCheckCategories(categoryFilter?: string[]): Promise<{
  * @param categoryId - Optional parent category ID to scrape (e.g., 'conectividad'). 
  *                     If provided, only subcategories of this parent are processed.
  */
-export async function runIncrementalScraper(forceFullScrape: boolean = false, categoryId?: string): Promise<{
+export async function runIncrementalScraper(forceFullScrape: boolean = false, categoryId?: string, skipExistingCheck: boolean = false): Promise<{
   success: boolean;
   preCheck: { total: number; changed: string[]; unchanged: string[]; errors: string[] };
   scrapeResult?: { created: number; updated: number; createdIds: string[]; updatedIds: string[]; errors: string[]; durationMs: number; discontinued: number };
@@ -228,13 +228,18 @@ export async function runIncrementalScraper(forceFullScrape: boolean = false, ca
   const toScrape = [...preCheckResult.changed, ...preCheckResult.errors];
 
   // Collect existing product IDs per category from pre-check — Playwright will skip these
+  // UNLESS skipExistingCheck is true (forces Playwright to re-enrich ALL products)
   const db = await getDb();
   const existingProductIdsByCategory = new Map<string, string[]>();
-  for (const categoryId of preCheckResult.changed) {
-    const state = await db.collection('scraper_state').findOne({ categoryId });
-    if (state?.productIds?.length > 0) {
-      existingProductIdsByCategory.set(categoryId, state.productIds);
+  if (!skipExistingCheck) {
+    for (const categoryId of preCheckResult.changed) {
+      const state = await db.collection('scraper_state').findOne({ categoryId });
+      if (state?.productIds?.length > 0) {
+        existingProductIdsByCategory.set(categoryId, state.productIds);
+      }
     }
+  } else {
+    console.log('[Incremental] skipExistingCheck=true — Playwright will re-enrich ALL products');
   }
 
   console.log(
