@@ -114,12 +114,20 @@ async function getCategoryPreview(client, idsubrubro1, baseUrl) {
 /**
  * Pre-check all categories in parallel batches.
  * Returns which categories have changed since last scrape.
+ *
+ * @param categoryFilter - Optional array of category IDs to check. If provided, only these categories are checked.
  */
-async function preCheckCategories() {
+async function preCheckCategories(categoryFilter) {
     const result = { changed: [], unchanged: [], errors: [] };
     const config = (0, config_1.getScraperConfig)();
     const client = (0, http_client_1.createHttpClient)(config);
-    const categories = config_1.jotakpCategories.filter((c) => c.idsubrubro1 > 0);
+    // Filter categories: only subcategories (idsubrubro1 > 0), optionally filtered by parent
+    let categories = config_1.jotakpCategories.filter((c) => c.idsubrubro1 > 0);
+    if (categoryFilter && categoryFilter.length > 0) {
+        // Find all subcategories whose parent is in the filter, or that are directly in the filter
+        const filterSet = new Set(categoryFilter);
+        categories = categories.filter((c) => filterSet.has(c.id) || filterSet.has(c.parentId || ''));
+    }
     console.log(`[Incremental] Pre-checking ${categories.length} categories...`);
     const MAX_PARALLEL = 4;
     for (let i = 0; i < categories.length; i += MAX_PARALLEL) {
@@ -174,11 +182,30 @@ async function preCheckCategories() {
  *
  * Session optimization: creates ONE authenticated HTTP session shared across all
  * categories, instead of logging in 127 times.
+ *
+ * @param forceFullScrape - If true, skip pre-check and scrape all categories.
+ * @param categoryId - Optional parent category ID to scrape (e.g., 'conectividad').
+ *                     If provided, only subcategories of this parent are processed.
  */
-async function runIncrementalScraper(forceFullScrape = false) {
+async function runIncrementalScraper(forceFullScrape = false, categoryId) {
     console.log('[Incremental] Starting incremental scraper...');
     const config = (0, config_1.getScraperConfig)();
-    const categories = config_1.jotakpCategories.filter((c) => c.idsubrubro1 > 0);
+    // Filter categories: if categoryId is provided, only use matching subcategories
+    // Supports both parent IDs (e.g., 'conectividad' → all its subcategories)
+    // and direct subcategory IDs (e.g., 'routers' → just that one)
+    let categories = config_1.jotakpCategories.filter((c) => c.idsubrubro1 > 0);
+    if (categoryId) {
+        const asParent = categories.filter((c) => c.parentId === categoryId);
+        if (asParent.length > 0) {
+            categories = asParent;
+            console.log(`[Incremental] Filtering to parent "${categoryId}" — ${categories.length} subcategories`);
+        }
+        else {
+            // categoryId is itself a subcategory
+            categories = categories.filter((c) => c.id === categoryId);
+            console.log(`[Incremental] Filtering to subcategory "${categoryId}" — ${categories.length} categories`);
+        }
+    }
     // Create ONE shared HTTP client for the entire run
     const sharedHttp = (0, http_client_1.createHttpClient)(config);
     // Login ONCE — this populates the cookie jar on sharedHttp
@@ -193,16 +220,25 @@ async function runIncrementalScraper(forceFullScrape = false) {
         preCheckResult = { changed: categories.map((c) => c.id), unchanged: [], errors: [] };
     }
     else {
-        preCheckResult = await preCheckCategories();
+        // Pass category IDs to preCheckCategories for filtering
+        preCheckResult = await preCheckCategories(categories.map((c) => c.id));
     }
     const toScrape = [...preCheckResult.changed, ...preCheckResult.errors];
+    // Collect existing product IDs per category from pre-check — Playwright will skip these
+    const db = await getDb();
+    const existingProductIdsByCategory = new Map();
+    for (const categoryId of preCheckResult.changed) {
+        const state = await db.collection('scraper_state').findOne({ categoryId });
+        if (state?.productIds?.length > 0) {
+            existingProductIdsByCategory.set(categoryId, state.productIds);
+        }
+    }
     console.log(`[Incremental] Pre-check: ${preCheckResult.changed.length} changed, ${preCheckResult.unchanged.length} unchanged, ${preCheckResult.errors.length} errors — scraping ${toScrape.length} categories`);
     const scrapeResults = { created: 0, updated: 0, createdIds: [], updatedIds: [], errors: [], durationMs: 0, discontinued: 0 };
     const startTime = Date.now();
     const MAX_PARALLEL = 4;
     // Step 2a: Mark discontinued + update timestamp for UNCHANGED categories
     // Uses the product IDs captured during pre-check (already in scraper_state).
-    const db = await getDb();
     let totalDiscontinued = 0;
     for (const categoryId of preCheckResult.unchanged) {
         try {
@@ -227,8 +263,9 @@ async function runIncrementalScraper(forceFullScrape = false) {
         console.log(`[Incremental] Scraping batch ${Math.floor(i / MAX_PARALLEL) + 1}: ${batch.join(', ')}`);
         const batchResults = await Promise.all(batch.map(async (categoryId) => {
             try {
-                // Pass the shared authenticated HTTP client + skipLogin
-                const result = await (0, scraper_service_1.runScraper)({ categoryId, source: 'incremental', skipLogin: true }, sharedHttp);
+                // Pass existing product IDs so Playwright only enriches NEW products
+                const existingProductIds = existingProductIdsByCategory.get(categoryId) || [];
+                const result = await (0, scraper_service_1.runScraper)({ categoryId, source: 'incremental', skipLogin: true, existingProductIds }, sharedHttp);
                 // Update state
                 await db.collection('scraper_state').updateOne({ categoryId }, { $set: { lastScrapeAt: new Date() } });
                 return result;

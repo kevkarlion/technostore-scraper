@@ -122,6 +122,8 @@ export interface ScraperRunRequest {
   source?: string;
   /** Skip login — use when passing a pre-authenticated HTTP client */
   skipLogin?: boolean;
+  /** Product IDs that existed before this scrape — Playwright skips these (only enriches new products) */
+  existingProductIds?: string[];
 }
 
 /**

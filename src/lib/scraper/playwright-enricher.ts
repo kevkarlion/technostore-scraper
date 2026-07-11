@@ -1,0 +1,280 @@
+import { chromium, Browser, BrowserContext, Page } from 'playwright';
+
+export interface EnrichedProductData {
+  /** USD price pre-IVA: "169,37" */
+  priceRaw?: string;
+  /** ARS price: "255.748,70" */
+  priceWithIvaRaw?: string;
+  /** Product description */
+  description?: string;
+  /** Product SKU */
+  sku?: string;
+  /** Stock quantity */
+  stock?: number;
+  /** Image URLs from detail page */
+  imageUrls?: string[];
+}
+
+/**
+ * PlaywrightEnricher — navigates to each product's detail page and scrapes
+ * the rendered DOM for prices, description, SKU, stock, and images.
+ *
+ * The supplier site (Cappelletti/jotakp) only renders price HTML when:
+ *   1. The user is logged in (ASP.NET session with auth)
+ *   2. A sucursal (branch) is selected in the session
+ *
+ * HTTP-only scraping can't get prices because the server strips price
+ * elements from the HTML response. Playwright runs a real browser that
+ * maintains the full session, so prices appear in the rendered DOM.
+ *
+ * Flow:
+ *   1. Login via Playwright (fills login form directly)
+ *   2. Select branch (Cipolletti, Id=1)
+ *   3. For each product: navigate to articulo.aspx?id=X, scrape DOM
+ */
+export class PlaywrightEnricher {
+  private browser: Browser | null = null;
+  private context: BrowserContext | null = null;
+  private initialized = false;
+  private baseUrl: string = '';
+
+  /**
+   * Launch the browser. Call once before any other method.
+   */
+  async launch(): Promise<void> {
+    this.browser = await chromium.launch({ headless: true });
+    this.context = await this.browser.newContext();
+  }
+
+  /**
+   * Inject cookies from an external HTTP session (e.g., axios tough-cookie jar).
+   * Use this if you already have an authenticated session.
+   */
+  async injectCookies(cookies: Array<{ name: string; value: string; domain: string; path: string }>): Promise<void> {
+    if (!this.context) throw new Error('Browser not launched');
+    await this.context.addCookies(cookies);
+  }
+
+  /**
+   * Initialize the session: login via the actual login page, then select branch.
+   * This is more reliable than injecting cookies because it lets ASP.NET
+   * establish the session properly via its own forms and page lifecycle.
+   *
+   * Must be called once before enrichProduct().
+   */
+  async initSession(baseUrl: string, credentials?: { email: string; password: string }): Promise<void> {
+    if (!this.context || this.initialized) return;
+    this.baseUrl = baseUrl;
+
+    const page = await this.context.newPage();
+    try {
+      // Navigate to login page
+      await page.goto(`${baseUrl}/loginext.aspx`, { waitUntil: 'networkidle', timeout: 20000 });
+
+      if (credentials) {
+        // Fill login form and submit
+        await page.fill('#TxtEmail', credentials.email);
+        await page.fill('#TxtPass1', credentials.password);
+
+        // Click login button and wait for navigation
+        await Promise.all([
+          page.waitForNavigation({ waitUntil: 'networkidle', timeout: 15000 }).catch(() => {}),
+          page.click('#BtnIngresar'),
+        ]);
+
+        console.log('[Playwright] Login submitted');
+      }
+
+      // Navigate to the site to establish session context
+      await page.goto(baseUrl, { waitUntil: 'networkidle', timeout: 15000 });
+
+      // Select branch (Cipolletti, Id=1) via PageMethod
+      const branchOk = await page.evaluate(async () => {
+        try {
+          if (typeof (window as any).PageMethods !== 'undefined') {
+            // Use the proper ASP.NET PageMethods
+            return await new Promise<boolean>((resolve) => {
+              (window as any).PageMethods.SeleccionarSucursal(
+                1,
+                (response: any) => {
+                  // Simulate OnSuccessSelSuc callback
+                  const el = document.getElementById('varIdDeposito');
+                  if (el) (el as HTMLInputElement).value = response.IdDepositoDefecto;
+                  resolve(true);
+                },
+                () => resolve(false),
+              );
+            });
+          }
+          // Fallback: direct fetch
+          const resp = await fetch('/articulo.aspx/SeleccionarSucursal', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json; charset=utf-8',
+              'X-Requested-With': 'XMLHttpRequest',
+            },
+            body: JSON.stringify({ Id: 1 }),
+          });
+          return resp.ok;
+        } catch {
+          return false;
+        }
+      });
+
+      if (branchOk) {
+        this.initialized = true;
+        console.log('[Playwright] Session initialized: login OK, branch Cipolletti selected');
+      } else {
+        console.error('[Playwright] Failed to select branch');
+      }
+    } finally {
+      await page.close();
+    }
+  }
+
+  /**
+   * Enrich a product by navigating to its detail page and scraping the DOM.
+   *
+   * Detail page structure (when logged in with branch selected):
+   *   div.col-12.tg-body-f18        → "U$D 169,37"     (USD price, pre-IVA)
+   *   div.col-12.tg-body-f10.pt-0   → "$ 255.748,70"   (ARS price)
+   *   div#divArticuloDescripcion    → description text
+   *   span[id*="lblCodigo"]         → SKU
+   *   span[id*="lblStock"]          → stock info
+   *   div.tg-img-overlay.artImg     → images (data-src attribute)
+   */
+  async enrichProduct(externalId: string, baseUrl?: string): Promise<EnrichedProductData> {
+    if (!this.context) throw new Error('Browser not launched');
+    const url = baseUrl || this.baseUrl;
+    if (!url) throw new Error('baseUrl required — call initSession first');
+
+    // Initialize session on first call
+    if (!this.initialized) {
+      await this.initSession(url);
+    }
+
+    const page: Page = await this.context.newPage();
+    try {
+      await page.goto(`${url}/articulo.aspx?id=${externalId}`, {
+        waitUntil: 'networkidle',
+        timeout: 20000,
+      });
+
+      // Wait a bit for any JS to finish rendering
+      await page.waitForTimeout(1500);
+
+      const result: EnrichedProductData = {};
+
+      // Scrape all data from the rendered DOM
+      const scraped = await page.evaluate(() => {
+        const data: Record<string, any> = {};
+
+        // USD price: div.col-12.tg-body-f18 → "U$D 169,37"
+        const usdEl = document.querySelector('div.col-12.tg-body-f18');
+        if (usdEl) data.priceRaw = usdEl.textContent?.trim() || '';
+
+        // ARS price: div.col-12.tg-body-f10.pt-0 → "$ 255.748,70"
+        const arsEls = document.querySelectorAll('div.col-12.tg-body-f10');
+        Array.from(arsEls).some((el) => {
+          const text = el.textContent?.trim() || '';
+          if (text.startsWith('$') && !text.includes('U$D')) {
+            data.priceWithIvaRaw = text;
+            return true; // break
+          }
+          return false;
+        });
+
+        // Description
+        const descEl = document.getElementById('divArticuloDescripcion');
+        if (descEl) data.description = descEl.textContent?.trim() || '';
+
+        // SKU
+        const skuEl = document.querySelector('[id*="lblCodigo"]');
+        if (skuEl) data.sku = skuEl.textContent?.trim() || '';
+
+        // Stock
+        const stockEl = document.querySelector('[id*="lblStock"]');
+        if (stockEl) {
+          const stockText = stockEl.textContent?.trim() || '';
+          const stockMatch = stockText.match(/(\d+)/);
+          data.stock = stockMatch ? parseInt(stockMatch[1], 10) : 0;
+        }
+
+        // Images — main image + thumbnails (deduplicated, normalized)
+        const imageSet = new Set<string>();
+        const images: string[] = [];
+        
+        const addImage = (src: string) => {
+          // Normalize: strip leading slash, lowercase for dedup
+          const normalized = src.replace(/^\/+/, '').toLowerCase();
+          if (!imageSet.has(normalized)) {
+            imageSet.add(normalized);
+            images.push(src.replace(/^\/+/, '')); // store without leading slash
+          }
+        };
+        
+        // Main image: img#artImg src="imagenes/000029481.PNG"
+        const mainImg = document.getElementById('artImg') as HTMLImageElement | null;
+        if (mainImg && mainImg.src && mainImg.src.includes('imagenes/')) {
+          const mainSrc = mainImg.src.replace(/^https?:\/\/[^/]+/, '');
+          addImage(mainSrc);
+        }
+        
+        // Thumbnails: div.tg-img-overlay.artImg data-src="imagenes/..."
+        const artImgs = document.querySelectorAll('div.tg-img-overlay.artImg');
+        artImgs.forEach((el) => {
+          const src = el.getAttribute('data-src');
+          if (src && src.includes('imagenes/')) {
+            addImage(src);
+          }
+        });
+        
+        data.imageUrls = images.slice(0, 10);
+
+        return data;
+      });
+
+      // Parse USD price: "U$D 169,37" → "169,37"
+      if (scraped.priceRaw) {
+        const usdMatch = scraped.priceRaw.match(/U\$D\s+([\d.,]+)/);
+        result.priceRaw = usdMatch ? usdMatch[1] : scraped.priceRaw;
+      }
+
+      // Parse ARS price: "$ 255.748,70" → "255.748,70"
+      if (scraped.priceWithIvaRaw) {
+        const arsMatch = scraped.priceWithIvaRaw.match(/\$\s*([\d.,]+)/);
+        result.priceWithIvaRaw = arsMatch ? arsMatch[1] : scraped.priceWithIvaRaw;
+      }
+
+      result.description = scraped.description;
+      result.sku = scraped.sku;
+      result.stock = scraped.stock;
+      result.imageUrls = scraped.imageUrls;
+
+      console.log(
+        `[Playwright] ${externalId}: ` +
+        `price=${result.priceRaw ?? 'N/A'}, ` +
+        `ars=${result.priceWithIvaRaw ?? 'N/A'}, ` +
+        `desc=${result.description?.length ?? 0}ch, ` +
+        `sku=${result.sku ?? 'N/A'}, ` +
+        `images=${result.imageUrls?.length ?? 0}`,
+      );
+
+      return result;
+    } finally {
+      await page.close();
+    }
+  }
+
+  /**
+   * Close the browser and clean up resources.
+   */
+  async close(): Promise<void> {
+    if (this.browser) {
+      await this.browser.close();
+      this.browser = null;
+      this.context = null;
+      this.initialized = false;
+    }
+  }
+}

@@ -28,6 +28,7 @@ import type {
 } from './types';
 import { ScraperError } from './types';
 import { createHttpClient, safeGet, safePost } from './http-client';
+import { PlaywrightEnricher } from './playwright-enricher';
 import crypto from 'crypto';
 
 // ============================================================================
@@ -146,7 +147,7 @@ const productRepository = {
     for (const field of fieldsToCompare) {
       const existingVal = existing[field];
       const newVal = product[field];
-      if (JSON.stringify(existingVal) !== JSON.stringify(newVal) && newVal !== undefined) {
+      if (JSON.stringify(existingVal) !== JSON.stringify(newVal)) {
         updateOps[field] = newVal;
         changes.push(field);
       }
@@ -154,9 +155,11 @@ const productRepository = {
 
     if (changes.length > 0) {
       await collection.updateOne({ _id: existing._id }, { $set: updateOps });
+      console.log(`[Upsert] ${product.externalId}: UPDATED — ${changes.join(', ')}`);
       return { created: false, updated: true, changes };
     }
 
+    console.log(`[Upsert] ${product.externalId}: NO CHANGES`);
     return { created: false, updated: false, changes: [] };
   },
 
@@ -333,6 +336,18 @@ export class ScraperService {
       const name = fullText.replace(/U\$D[\s\d.,+IVA%]+$/, '').trim();
       if (!name || name.length < 3) return;
 
+      // Extract image from listing page (CSS background-image)
+      const imgDiv = $(el).find('div.tg-article-img');
+      const bgImage = imgDiv.attr('style') || '';
+      const bgMatch = bgImage.match(/url\(([^)]+)\)/);
+      const listingImages: string[] = [];
+      if (bgMatch) {
+        const imgUrl = bgMatch[1].replace(/['"]/g, '').trim();
+        if (imgUrl.includes('imagenes/')) {
+          listingImages.push(imgUrl);
+        }
+      }
+
       products.push({
         externalId,
         name,
@@ -341,7 +356,7 @@ export class ScraperService {
         priceRaw: priceMatch ? priceMatch[1] : undefined,
         stockRaw: undefined,
         sku: '',
-        imageUrls: [],
+        imageUrls: listingImages,
         categories: [],
       });
     });
@@ -368,71 +383,16 @@ export class ScraperService {
 
       if (products.length === 0) break;
 
-      // Enrich products in parallel batches (5 concurrent)
-      const CONCURRENT_ENRICH = 5;
-      for (let i = 0; i < products.length; i += CONCURRENT_ENRICH) {
-        const batch = products.slice(i, i + CONCURRENT_ENRICH);
-        await Promise.all(
-          batch.map(async (product) => {
-            try {
-              await this.enrichProductDetail(product);
-              allProducts.push(product);
-              allIds.push(product.externalId);
-            } catch (e: any) {
-              console.log(`[Scraper] Error enriching product ${product.externalId}: ${e.message}`);
-              allProducts.push(product);
-              allIds.push(product.externalId);
-            }
-          }),
-        );
+      // Collect products — detail enrichment (prices, desc, images) happens via Playwright later
+      for (const product of products) {
+        allProducts.push(product);
+        allIds.push(product.externalId);
       }
 
       if (!hasMore) break;
     }
 
     return { products: allProducts, externalIds: allIds };
-  }
-
-  /**
-   * Enrich a product with full detail from its articulo.aspx page.
-   */
-  async enrichProductDetail(product: RawProduct): Promise<void> {
-    const url = `/articulo.aspx?id=${product.externalId}`;
-    const html = await safeGet(this.http, url);
-    const $ = cheerio.load(html);
-
-    // Description
-    const descEl =
-      $('#ContentPlaceHolder1_lblDescripcion').first() ||
-      $('[id*="lblDescripcion"]').first();
-    product.description = descEl.text().trim() || '';
-
-    // Stock
-    const stockEl =
-      $('#ContentPlaceHolder1_lblStock').first() ||
-      $('[id*="lblStock"]').first();
-    const stockText = stockEl.text().trim();
-    const stockMatch = stockText.match(/(\d+)/);
-    product.stock = stockMatch ? parseInt(stockMatch[1], 10) : 0;
-
-    // SKU
-    const skuEl =
-      $('#ContentPlaceHolder1_lblCodigo').first() ||
-      $('[id*="lblCodigo"]').first();
-    product.sku = skuEl.text().trim() || '';
-
-    // Images
-    const images: string[] = [];
-    $('div.tg-img-overlay.artImg').each((_: any, el: any) => {
-      const src = $(el).attr('data-src');
-      if (src && src.includes('imagenes/')) {
-        images.push(src);
-      }
-    });
-    product.imageUrls = images.slice(0, 5);
-
-    // Set categories
-    product.categories = [this.getCategoryId(product.externalId)];
   }
 
   /**
@@ -458,10 +418,26 @@ export class ScraperService {
     const updatedIds: string[] = [];
     const errors: string[] = [];
 
+    let playwrightEnricher: PlaywrightEnricher | null = null;
+
     try {
       // Login first (skip if using a pre-authenticated shared session)
       if (!this.request.skipLogin) {
         await this.login();
+      }
+
+      // Initialize Playwright for full product enrichment (prices, desc, SKU, images)
+      try {
+        playwrightEnricher = new PlaywrightEnricher();
+        await playwrightEnricher.launch();
+        await playwrightEnricher.initSession(this.config.baseUrl, {
+          email: this.config.email,
+          password: this.config.password,
+        });
+        console.log('[Scraper] Playwright launched and session initialized');
+      } catch (e: any) {
+        console.error('[Scraper] Failed to launch Playwright:', e.message);
+        playwrightEnricher = null;
       }
 
       // Process each category
@@ -470,27 +446,61 @@ export class ScraperService {
           console.log(`[Scraper] Processing category: ${cat.id} (${cat.idsubrubro1})`);
           const { products, externalIds } = await this.scrapeCategory(cat.idsubrubro1);
 
+          // Playwright enrichment — only for NEW products (skip existing)
+          const existingIds = new Set(this.request.existingProductIds || []);
+          let enrichedCount = 0;
+          let skippedCount = 0;
+          for (const product of products) {
+            if (existingIds.has(product.externalId)) {
+              skippedCount++;
+              continue; // Skip — already has data from previous scrape
+            }
+            if (playwrightEnricher) {
+              try {
+                const enriched = await playwrightEnricher.enrichProduct(product.externalId, this.config.baseUrl);
+                if (enriched.priceRaw) product.priceRaw = enriched.priceRaw;
+                if (enriched.priceWithIvaRaw) product.priceWithIvaRaw = enriched.priceWithIvaRaw;
+                if (enriched.description) product.description = enriched.description;
+                if (enriched.sku) product.sku = enriched.sku;
+                if (enriched.stock !== undefined) product.stock = enriched.stock;
+                if (enriched.imageUrls && enriched.imageUrls.length > 0) product.imageUrls = enriched.imageUrls;
+                enrichedCount++;
+              } catch (e: any) {
+                console.error(`[Playwright] ${product.externalId}: failed - ${e.message}`);
+              }
+            }
+          }
+          if (skippedCount > 0) {
+            console.log(`[Playwright] ${cat.id}: ${enrichedCount} new enriched, ${skippedCount} existing skipped`);
+          }
+
           // Save products to DB
           for (const product of products) {
             try {
-              const result = await productRepository.atomicUpsertByExternalId({
+              const upsertPayload = {
                 externalId: product.externalId,
                 name: product.name,
                 description: product.description,
                 price: product.priceRaw ? this.parsePrice(product.priceRaw) : 0,
                 priceRaw: product.priceRaw,
+                priceWithIvaRaw: product.priceWithIvaRaw,
                 currency: 'USD',
                 stock: product.stock,
                 sku: product.sku,
-                // If cloudinary URLs already exist from a previous upload, prefer them.
-                // Otherwise store raw supplier URLs — will be upgraded after image upload below.
                 imageUrls: product.cloudinaryUrls && product.cloudinaryUrls.length > 0
                   ? product.cloudinaryUrls
                   : product.imageUrls,
                 categories: [cat.id],
                 attributes: [],
                 inStock: product.stock > 0 || true,
-              });
+              };
+
+              console.log(
+                `[Upsert] ${product.externalId}: priceRaw=${upsertPayload.priceRaw ?? 'UNDEFINED'}, ` +
+                `price=${upsertPayload.price}, imageUrls=${upsertPayload.imageUrls.length}`,
+              );
+
+              const result = await productRepository.atomicUpsertByExternalId(upsertPayload);
 
               if (result.created) { created++; createdIds.push(product.externalId); }
               if (result.updated) { updated++; updatedIds.push(product.externalId); }
@@ -544,6 +554,8 @@ export class ScraperService {
     } catch (e: any) {
       errors.push(`Fatal error: ${e.message}`);
       console.error('[Scraper] Fatal error:', e);
+    } finally {
+      await playwrightEnricher?.close();
     }
 
     return {
