@@ -160,8 +160,10 @@ export class PlaywrightEnricher {
         timeout: 20000,
       });
 
-      // Wait a bit for any JS to finish rendering
-      await page.waitForTimeout(1500);
+      // Wait for price element to appear (smart wait instead of hardcoded 1.5s)
+      await page.waitForSelector('div.col-12.tg-body-f18, [id*="lblStock"], #divArticuloDescripcion', {
+        timeout: 5000,
+      }).catch(() => {}); // Element might not exist — that's ok
 
       const result: EnrichedProductData = {};
 

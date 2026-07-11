@@ -447,31 +447,36 @@ export class ScraperService {
           const { products, externalIds } = await this.scrapeCategory(cat.idsubrubro1);
 
           // Playwright enrichment — only for NEW products (skip existing)
+          // Runs in batches of ENRICHMENT_CONCURRENCY for parallel processing
+          const ENRICHMENT_CONCURRENCY = 3;
           const existingIds = new Set(this.request.existingProductIds || []);
+          const productsToEnrich = products.filter(p => !existingIds.has(p.externalId));
+          const skippedCount = products.length - productsToEnrich.length;
           let enrichedCount = 0;
-          let skippedCount = 0;
-          for (const product of products) {
-            if (existingIds.has(product.externalId)) {
-              skippedCount++;
-              continue; // Skip — already has data from previous scrape
-            }
-            if (playwrightEnricher) {
-              try {
-                const enriched = await playwrightEnricher.enrichProduct(product.externalId, this.config.baseUrl);
-                if (enriched.priceRaw) product.priceRaw = enriched.priceRaw;
-                if (enriched.priceWithIvaRaw) product.priceWithIvaRaw = enriched.priceWithIvaRaw;
-                if (enriched.description) product.description = enriched.description;
-                if (enriched.sku) product.sku = enriched.sku;
-                if (enriched.stock !== undefined) product.stock = enriched.stock;
-                if (enriched.imageUrls && enriched.imageUrls.length > 0) product.imageUrls = enriched.imageUrls;
-                enrichedCount++;
-              } catch (e: any) {
-                console.error(`[Playwright] ${product.externalId}: failed - ${e.message}`);
+
+          if (playwrightEnricher && productsToEnrich.length > 0) {
+            for (let i = 0; i < productsToEnrich.length; i += ENRICHMENT_CONCURRENCY) {
+              const batch = productsToEnrich.slice(i, i + ENRICHMENT_CONCURRENCY);
+              const results = await Promise.allSettled(
+                batch.map(async (product) => {
+                  const enriched = await playwrightEnricher!.enrichProduct(product.externalId, this.config.baseUrl);
+                  if (enriched.priceRaw) product.priceRaw = enriched.priceRaw;
+                  if (enriched.priceWithIvaRaw) product.priceWithIvaRaw = enriched.priceWithIvaRaw;
+                  if (enriched.description) product.description = enriched.description;
+                  if (enriched.sku) product.sku = enriched.sku;
+                  if (enriched.stock !== undefined) product.stock = enriched.stock;
+                  if (enriched.imageUrls && enriched.imageUrls.length > 0) product.imageUrls = enriched.imageUrls;
+                })
+              );
+              enrichedCount += results.filter(r => r.status === 'fulfilled').length;
+              for (const f of results.filter(r => r.status === 'rejected')) {
+                console.error(`[Playwright] enrichment failed: ${(f as PromiseRejectedResult).reason?.message || f}`);
               }
             }
           }
-          if (skippedCount > 0) {
-            console.log(`[Playwright] ${cat.id}: ${enrichedCount} new enriched, ${skippedCount} existing skipped`);
+
+          if (skippedCount > 0 || enrichedCount > 0) {
+            console.log(`[Playwright] ${cat.id}: ${enrichedCount} enriched (×${ENRICHMENT_CONCURRENCY} parallel), ${skippedCount} existing skipped`);
           }
 
           // Save products to DB

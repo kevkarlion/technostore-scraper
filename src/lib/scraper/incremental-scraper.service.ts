@@ -56,7 +56,7 @@ async function getCategoryPreview(
 ): Promise<{ contentHash: string; productCount: number; productIds: string[]; firstPriceUsd: number | null } | null> {
   try {
     const url = `${baseUrl}/buscar.aspx?idsubrubro1=${idsubrubro1}&pag=1`;
-    const html = await safeGet(client, url);
+    const html = await safeGet(client, url, 3, 100); // 100ms delay for lightweight pre-check
     const $ = cheerio.load(html);
     const contentHash = crypto.createHash('md5').update(html).digest('hex');
 
