@@ -30,16 +30,19 @@ function createHealthChecker(config) {
     async function checkAfterExecution(newLog) {
         const detected = [];
         try {
+            // DISABLED: scraper-stopped resolution (feature disabled)
             // Resolve any pending 'scraper-stopped' alerts — any execution means
             // the scraper is not stopped. We do this unconditionally so that even
             // a warning/error run clears stale alerts, preventing the 30-min
             // checkScraperStopped timer from accumulating duplicates.
-            try {
-                await healthCollection.updateMany({ checkType: 'scraper-stopped', resolvedAt: { $exists: false } }, { $set: { resolvedAt: new Date() } });
-            }
-            catch (e) {
-                console.error('[HealthChecker] Error resolving scraper-stopped alerts:', e);
-            }
+            // try {
+            //   await healthCollection.updateMany(
+            //     { checkType: 'scraper-stopped', resolvedAt: { $exists: false } },
+            //     { $set: { resolvedAt: new Date() } }
+            //   );
+            // } catch (e) {
+            //   console.error('[HealthChecker] Error resolving scraper-stopped alerts:', e);
+            // }
             // Check 1: Consecutive failures (3+ errors in a row).
             // countDocuments with sort+limit returns the count of the most recent N
             // matching docs — perfect for "are the last 3 runs all errors?".
@@ -111,6 +114,7 @@ function createHealthChecker(config) {
         }
         return detected;
     }
+    // DISABLED: scraper-stopped check - not needed since scraper runs manually/on-demand
     /**
      * Check whether the scraper has stopped (no execution in >3h during the
      * Argentina 07:00–24:00 active window). Returns a HealthCheck alert or null.
@@ -118,60 +122,70 @@ function createHealthChecker(config) {
      * Designed to be called on a 30-minute interval from server.ts, NOT on
      * every execution.
      */
+    // async function checkScraperStopped(): Promise<HealthCheck | null> {
+    //   try {
+    //     const now = new Date();
+    //     // Argentina is UTC-3, so local hour = UTC hour - 3.
+    //     const argentinaHour = now.getUTCHours() - 3;
+    //     // Active window: 07:00 – 24:00 Argentina time.
+    //     // Outside this window (i.e. 00:00–07:00) the scraper is allowed to be
+    //     // idle — do not alert.
+    //     if (argentinaHour < 7) {
+    //       return null;
+    //     }
+    //     const threeHoursAgo = new Date(now.getTime() - 3 * 60 * 60 * 1000);
+    //     const lastRun = await execCollection.findOne(
+    //       {},
+    //       { sort: { startedAt: -1 }, projection: { startedAt: 1 } }
+    //     ) as { startedAt?: Date } | null;
+    //     if (!lastRun || !lastRun.startedAt) {
+    //       // Skip if there's already an unresolved alert of this type to avoid
+    //       // accumulating duplicates on the 30-min timer (no execution yet).
+    //       const existing = await healthCollection.findOne(
+    //         { checkType: 'scraper-stopped', resolvedAt: { $exists: false } },
+    //         { sort: { detectedAt: -1 } }
+    //       );
+    //       if (existing) return null;
+    //       return {
+    //         detectedAt: now,
+    //         checkType: 'scraper-stopped',
+    //         severity: 'critical',
+    //         message: 'No scraper executions recorded yet',
+    //         details: { lastRunAt: null },
+    //       };
+    //     }
+    //     if (lastRun.startedAt < threeHoursAgo) {
+    //       // Skip if there's already an unresolved alert for this condition
+    //       // to avoid accumulating duplicates (timer runs every 30 min).
+    //       const existing = await healthCollection.findOne(
+    //         { checkType: 'scraper-stopped', resolvedAt: { $exists: false } },
+    //         { sort: { detectedAt: -1 } }
+    //       );
+    //       if (existing) {
+    //         // Still refresh the detectedAt so the dashboard shows the most
+    //         // recent check time without creating a new document.
+    //         await healthCollection.updateOne(
+    //           { _id: existing._id },
+    //           { $set: { detectedAt: now } }
+    //         );
+    //         return null;
+    //       }
+    //       return {
+    //         detectedAt: now,
+    //         checkType: 'scraper-stopped',
+    //         severity: 'critical',
+    //         message: `Scraper has not run in over 3 hours. Last run: ${lastRun.startedAt.toISOString()}`,
+    //         details: { lastRunAt: lastRun.startedAt },
+    //       };
+    //     }
+    //     return null;
+    //   } catch (e) {
+    //     console.error('[HealthChecker] Error in checkScraperStopped:', e);
+    //     return null;
+    //   }
+    // }
     async function checkScraperStopped() {
-        try {
-            const now = new Date();
-            // Argentina is UTC-3, so local hour = UTC hour - 3.
-            const argentinaHour = now.getUTCHours() - 3;
-            // Active window: 07:00 – 24:00 Argentina time.
-            // Outside this window (i.e. 00:00–07:00) the scraper is allowed to be
-            // idle — do not alert.
-            if (argentinaHour < 7) {
-                return null;
-            }
-            const threeHoursAgo = new Date(now.getTime() - 3 * 60 * 60 * 1000);
-            const lastRun = await execCollection.findOne({}, { sort: { startedAt: -1 }, projection: { startedAt: 1 } });
-            if (!lastRun || !lastRun.startedAt) {
-                // Skip if there's already an unresolved alert of this type to avoid
-                // accumulating duplicates on the 30-min timer (no execution yet).
-                const existing = await healthCollection.findOne({ checkType: 'scraper-stopped', resolvedAt: { $exists: false } }, { sort: { detectedAt: -1 } });
-                if (existing)
-                    return null;
-                return {
-                    detectedAt: now,
-                    checkType: 'scraper-stopped',
-                    severity: 'critical',
-                    message: 'No scraper executions recorded yet',
-                    details: { lastRunAt: null },
-                };
-            }
-            if (lastRun.startedAt < threeHoursAgo) {
-                // Skip if there's already an unresolved alert for this condition
-                // to avoid accumulating duplicates (timer runs every 30 min).
-                const existing = await healthCollection.findOne({ checkType: 'scraper-stopped', resolvedAt: { $exists: false } }, { sort: { detectedAt: -1 } });
-                if (existing) {
-                    // Still refresh the detectedAt so the dashboard shows the most
-                    // recent check time without creating a new document.
-                    await healthCollection.updateOne({ _id: existing._id }, { $set: { detectedAt: now } });
-                    return null;
-                }
-                return {
-                    detectedAt: now,
-                    checkType: 'scraper-stopped',
-                    severity: 'critical',
-                    message: `Scraper has not run in over 3 hours. Last run: ${lastRun.startedAt.toISOString()}`,
-                    details: {
-                        lastRunAt: lastRun.startedAt.toISOString(),
-                        hoursSinceLastRun: Math.round((now.getTime() - lastRun.startedAt.getTime()) / 3600000),
-                    },
-                };
-            }
-            return null;
-        }
-        catch (e) {
-            console.error('[HealthChecker] Error checking scraper stopped:', e);
-            return null;
-        }
+        return null; // Disabled
     }
     /**
      * Get all unresolved health alerts (resolvedAt not set), newest first.

@@ -165,26 +165,25 @@ let scraperStoppedInterval = null;
         // Start periodic metrics aggregation (hourly). The handle is kept so
         // a future shutdown hook can clearInterval() cleanly.
         metricsInterval = metricsAggregator.startPeriodicAggregation(60 * 60 * 1000);
+        // DISABLED: scraper-stopped check - not needed since scraper runs manually/on-demand
         // Start periodic scraper-stopped check (every 30 min). Outside the
         // 07:00–24:00 Argentina active window the check is a no-op, so this
         // timer is safe to run 24/7.
-        scraperStoppedInterval = setInterval(async () => {
-            try {
-                if (!healthChecker)
-                    return;
-                const alert = await healthChecker.checkScraperStopped();
-                if (alert) {
-                    console.warn('[Health] Scraper stopped alert:', alert.message);
-                    if (sseEmitter) {
-                        sseEmitter.broadcast('health-alert', alert);
-                        console.log(`[SSE] Broadcast health-alert: scraper-stopped (${alert.severity})`);
-                    }
-                }
-            }
-            catch (e) {
-                console.error('[Health] Error in stopped check:', e);
-            }
-        }, 30 * 60 * 1000);
+        // scraperStoppedInterval = setInterval(async () => {
+        //   try {
+        //     if (!healthChecker) return;
+        //     const alert = await healthChecker.checkScraperStopped();
+        //     if (alert) {
+        //       console.warn('[Health] Scraper stopped alert:', alert.message);
+        //       if (sseEmitter) {
+        //         sseEmitter.broadcast('health-alert', alert);
+        //         console.log(`[SSE] Broadcast health-alert: scraper-stopped (${alert.severity})`);
+        //       }
+        //     }
+        //   } catch (e) {
+        //     console.error('[Health] Error in stopped check:', e);
+        //   }
+        // }, 30 * 60 * 1000);
         // Build the monitoring API router. The router is registered with
         // express below via a deferred mount (see "Mount monitoring API"
         // comment near `const app = express()`), because `app` is declared
@@ -434,9 +433,9 @@ app.post('/scraper/incremental', async (req, res) => {
     let release = null;
     try {
         release = tryAcquireScraper();
-        const { forceFullScrape, categoryId } = req.body;
+        const { forceFullScrape, categoryId, skipExistingCheck } = req.body;
         res.json({ success: true, message: 'Incremental scrape started in background', categoryId, startedAt: new Date().toISOString() });
-        const { result, executionId } = await executionRecorder.recordExecution('http', () => (0, index_1.runIncrementalScraper)(forceFullScrape, categoryId), {
+        const { result, executionId } = await executionRecorder.recordExecution('http', () => (0, index_1.runIncrementalScraper)(forceFullScrape, categoryId, skipExistingCheck), {
             extractStats: (r) => ({
                 productsFound: (r.scrapeResult?.created || 0) + (r.scrapeResult?.updated || 0),
                 productsCreated: r.scrapeResult?.created || 0,
@@ -455,6 +454,27 @@ app.post('/scraper/incremental', async (req, res) => {
         if (!res.headersSent)
             res.status(error.statusCode || 500).json({ error: error.message });
         console.error('[Incremental] Background run failed:', error.message);
+    }
+    finally {
+        if (release)
+            release();
+    }
+});
+// NEW: Playwright Listing scraper - detects price changes for existing products
+app.post('/scraper/playwright-listing', async (req, res) => {
+    let release = null;
+    try {
+        release = tryAcquireScraper();
+        const { categoryId } = req.body;
+        res.json({ success: true, message: 'Playwright Listing scrape started in background', categoryId, startedAt: new Date().toISOString() });
+        const { runScraperPlaywrightListing } = await Promise.resolve().then(() => __importStar(require('./src/lib/scraper/scraper-playwright-listing.service')));
+        const result = await runScraperPlaywrightListing({ categoryId, source: 'playwright-listing' });
+        console.log(`[Playwright Listing] Run complete: ${result.created} created, ${result.updated} updated`);
+    }
+    catch (error) {
+        if (!res.headersSent)
+            res.status(error.statusCode || 500).json({ error: error.message });
+        console.error('[Playwright Listing] Run failed:', error.message);
     }
     finally {
         if (release)

@@ -139,16 +139,28 @@ class PlaywrightEnricher {
                 waitUntil: 'networkidle',
                 timeout: 20000,
             });
-            // Wait a bit for any JS to finish rendering
-            await page.waitForTimeout(1500);
+            // Wait for price element to appear (smart wait instead of hardcoded 1.5s)
+            await page.waitForSelector('div.col-12.tg-body-f18, [id*="lblStock"], #divArticuloDescripcion', {
+                timeout: 5000,
+            }).catch(() => { }); // Element might not exist — that's ok
             const result = {};
             // Scrape all data from the rendered DOM
+            // NOTE: no inner functions — Playwright's transpiler generates __name refs that break
             const scraped = await page.evaluate(() => {
                 const data = {};
                 // USD price: div.col-12.tg-body-f18 → "U$D 169,37"
                 const usdEl = document.querySelector('div.col-12.tg-body-f18');
-                if (usdEl)
+                if (usdEl) {
                     data.priceRaw = usdEl.textContent?.trim() || '';
+                }
+                else {
+                    // Fallback: look for any element with price text
+                    const priceText = document.body.innerText.match(/U\$D\s*[\d.,]+/);
+                    if (priceText) {
+                        console.log('[Playwright] Fallback price found:', priceText[0]);
+                        data.priceRaw = priceText[0];
+                    }
+                }
                 // ARS price: div.col-12.tg-body-f10.pt-0 → "$ 255.748,70"
                 const arsEls = document.querySelectorAll('div.col-12.tg-body-f10');
                 Array.from(arsEls).some((el) => {
@@ -177,26 +189,27 @@ class PlaywrightEnricher {
                 // Images — main image + thumbnails (deduplicated, normalized)
                 const imageSet = new Set();
                 const images = [];
-                const addImage = (src) => {
-                    // Normalize: strip leading slash, lowercase for dedup
-                    const normalized = src.replace(/^\/+/, '').toLowerCase();
-                    if (!imageSet.has(normalized)) {
-                        imageSet.add(normalized);
-                        images.push(src.replace(/^\/+/, '')); // store without leading slash
-                    }
-                };
                 // Main image: img#artImg src="imagenes/000029481.PNG"
                 const mainImg = document.getElementById('artImg');
                 if (mainImg && mainImg.src && mainImg.src.includes('imagenes/')) {
-                    const mainSrc = mainImg.src.replace(/^https?:\/\/[^/]+/, '');
-                    addImage(mainSrc);
+                    const mainSrc = mainImg.src.replace(/^https?:\/\/[^/]+/, '').replace(/^\/+/, '');
+                    const normalized = mainSrc.toLowerCase();
+                    if (!imageSet.has(normalized)) {
+                        imageSet.add(normalized);
+                        images.push(mainSrc);
+                    }
                 }
                 // Thumbnails: div.tg-img-overlay.artImg data-src="imagenes/..."
                 const artImgs = document.querySelectorAll('div.tg-img-overlay.artImg');
                 artImgs.forEach((el) => {
                     const src = el.getAttribute('data-src');
                     if (src && src.includes('imagenes/')) {
-                        addImage(src);
+                        const clean = src.replace(/^\/+/, '');
+                        const normalized = clean.toLowerCase();
+                        if (!imageSet.has(normalized)) {
+                            imageSet.add(normalized);
+                            images.push(clean);
+                        }
                     }
                 });
                 data.imageUrls = images.slice(0, 10);

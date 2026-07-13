@@ -174,7 +174,16 @@ export class PlaywrightEnricher {
 
         // USD price: div.col-12.tg-body-f18 → "U$D 169,37"
         const usdEl = document.querySelector('div.col-12.tg-body-f18');
-        if (usdEl) data.priceRaw = usdEl.textContent?.trim() || '';
+        if (usdEl) {
+          data.priceRaw = usdEl.textContent?.trim() || '';
+        } else {
+          // Fallback: look for any element with price text
+          const priceText = document.body.innerText.match(/U\$D\s*[\d.,]+/);
+          if (priceText) {
+            console.log('[Playwright] Fallback price found:', priceText[0]);
+            data.priceRaw = priceText[0];
+          }
+        }
 
         // ARS price: div.col-12.tg-body-f10.pt-0 → "$ 255.748,70"
         const arsEls = document.querySelectorAll('div.col-12.tg-body-f10');

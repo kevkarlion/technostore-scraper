@@ -84,8 +84,8 @@ async function getDb() {
  */
 async function getCategoryPreview(client, idsubrubro1, baseUrl) {
     try {
-        const url = `${baseUrl}/buscar.aspx?idsubrubro1=${idsubrubro1}&pag=1`;
-        const html = await (0, http_client_1.safeGet)(client, url);
+        const url = `${baseUrl}/buscar.aspx?idsubrubro1=${idsubrubro1}&pag=1&conIva=1`;
+        const html = await (0, http_client_1.safeGet)(client, url, 3, 100); // 100ms delay for lightweight pre-check
         const $ = cheerio.load(html);
         const contentHash = crypto_1.default.createHash('md5').update(html).digest('hex');
         const productIds = [];
@@ -187,7 +187,7 @@ async function preCheckCategories(categoryFilter) {
  * @param categoryId - Optional parent category ID to scrape (e.g., 'conectividad').
  *                     If provided, only subcategories of this parent are processed.
  */
-async function runIncrementalScraper(forceFullScrape = false, categoryId) {
+async function runIncrementalScraper(forceFullScrape = false, categoryId, skipExistingCheck = false) {
     console.log('[Incremental] Starting incremental scraper...');
     const config = (0, config_1.getScraperConfig)();
     // Filter categories: if categoryId is provided, only use matching subcategories
@@ -225,13 +225,19 @@ async function runIncrementalScraper(forceFullScrape = false, categoryId) {
     }
     const toScrape = [...preCheckResult.changed, ...preCheckResult.errors];
     // Collect existing product IDs per category from pre-check — Playwright will skip these
+    // UNLESS skipExistingCheck is true (forces Playwright to re-enrich ALL products)
     const db = await getDb();
     const existingProductIdsByCategory = new Map();
-    for (const categoryId of preCheckResult.changed) {
-        const state = await db.collection('scraper_state').findOne({ categoryId });
-        if (state?.productIds?.length > 0) {
-            existingProductIdsByCategory.set(categoryId, state.productIds);
+    if (!skipExistingCheck) {
+        for (const categoryId of preCheckResult.changed) {
+            const state = await db.collection('scraper_state').findOne({ categoryId });
+            if (state?.productIds?.length > 0) {
+                existingProductIdsByCategory.set(categoryId, state.productIds);
+            }
         }
+    }
+    else {
+        console.log('[Incremental] skipExistingCheck=true — Playwright will re-enrich ALL products');
     }
     console.log(`[Incremental] Pre-check: ${preCheckResult.changed.length} changed, ${preCheckResult.unchanged.length} unchanged, ${preCheckResult.errors.length} errors — scraping ${toScrape.length} categories`);
     const scrapeResults = { created: 0, updated: 0, createdIds: [], updatedIds: [], errors: [], durationMs: 0, discontinued: 0 };

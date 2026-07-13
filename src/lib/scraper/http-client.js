@@ -112,12 +112,13 @@ function getRequestDelay() {
 /**
  * Safe GET request with retry logic.
  * Returns the response data (string) or throws after exhausting retries.
+ * @param delayMs - Override the default delay (e.g. 100ms for lightweight pre-checks)
  */
-async function safeGet(client, urlOrPath, retries = MAX_RETRIES) {
+async function safeGet(client, urlOrPath, retries = MAX_RETRIES, delayMs) {
     let lastError = null;
     for (let attempt = 1; attempt <= retries; attempt++) {
         try {
-            await delay(getRequestDelay());
+            await delay(delayMs ?? getRequestDelay());
             const response = await client.get(urlOrPath, {
                 responseType: 'text',
                 transformResponse: [(data) => data], // Raw HTML, no JSON parsing

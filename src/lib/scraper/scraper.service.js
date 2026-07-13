@@ -57,6 +57,39 @@ const types_1 = require("./types");
 const http_client_1 = require("./http-client");
 const playwright_enricher_1 = require("./playwright-enricher");
 // ============================================================================
+// SLUG GENERATION UTILITIES
+// ============================================================================
+/**
+ * Generate a URL-friendly slug from product name.
+ * Matches the implementation in TechnoStore's product-to-presentation.ts
+ */
+function generateProductSlug(name) {
+    if (!name)
+        return '';
+    return name
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '') // Remove accents
+        .replace(/[^a-z0-9]+/g, '-') // Replace non-alphanumeric with dash
+        .replace(/^-+|-+$/g, '') // Remove leading/trailing dashes
+        .replace(/-+/g, '-'); // Replace multiple dashes with single
+}
+/**
+ * Normalize text for search (lowercase, no accents, no special chars).
+ * Used for searchName field to enable fast text search.
+ */
+function normalizeText(text) {
+    if (!text)
+        return '';
+    return text
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^a-z0-9\s]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+// ============================================================================
 // PERSISTENT STORE
 // ============================================================================
 // Shared MongoDB connection (singleton — same pattern as before).
@@ -119,8 +152,13 @@ const productRepository = {
             supplier: product.supplier || 'jotakp',
         });
         if (!existing) {
+            // Generate slug and searchName for new products
+            const slug = generateProductSlug(product.name);
+            const searchName = normalizeText(product.name);
             await collection.insertOne({
                 ...product,
+                slug,
+                searchName,
                 supplier: product.supplier || 'jotakp',
                 status: 'active',
                 inStock: true,
@@ -128,6 +166,7 @@ const productRepository = {
                 createdAt: now,
                 updatedAt: now,
             });
+            console.log(`[Upsert] ${product.externalId}: CREATED (slug: ${slug})`);
             return { created: true, updated: false, changes: ['CREATE'] };
         }
         const changes = [];
@@ -152,13 +191,30 @@ const productRepository = {
             'categories',
             'imageUrls',
         ];
+        // Helper: check if a value is "empty" (scraper default, not real data)
+        // null and undefined are equivalent "no data" states
+        const isEmpty = (val) => val === undefined || val === null || val === '' || val === 0 ||
+            (Array.isArray(val) && val.length === 0);
         for (const field of fieldsToCompare) {
             const existingVal = existing[field];
             const newVal = product[field];
+            // Don't overwrite valid existing data with empty/zero defaults
             if (JSON.stringify(existingVal) !== JSON.stringify(newVal)) {
+                // Skip if: new value is empty (and existing is also empty or has data)
+                // This prevents overwriting null/undefined with null/undefined (no-op)
+                // And prevents overwriting valid data with empty defaults
+                if (isEmpty(newVal)) {
+                    continue;
+                }
                 updateOps[field] = newVal;
                 changes.push(field);
             }
+        }
+        // If name changed, also regenerate slug and searchName
+        if (changes.includes('name') && product.name) {
+            updateOps.slug = generateProductSlug(product.name);
+            updateOps.searchName = normalizeText(product.name);
+            changes.push('slug', 'searchName');
         }
         if (changes.length > 0) {
             await collection.updateOne({ _id: existing._id }, { $set: updateOps });
@@ -281,9 +337,11 @@ class ScraperService {
     /**
      * Scrape a single page of a category listing.
      * Returns the list of raw products found on that page.
+     * NOTE: Prices are NOT extracted from listing (they're JS-rendered).
+     * Only product IDs, names, and listing images are captured here.
      */
     async scrapeCategoryPage(idsubrubro1, pageNum) {
-        const url = `/buscar.aspx?idsubrubro1=${idsubrubro1}&pag=${pageNum}`;
+        const url = `/buscar.aspx?idsubrubro1=${idsubrubro1}&pag=${pageNum}&conIva=1`;
         const html = await (0, http_client_1.safeGet)(this.http, url);
         const $ = cheerio.load(html);
         const products = [];
@@ -295,13 +353,7 @@ class ScraperService {
             if (!idMatch)
                 return;
             const externalId = idMatch[1];
-            // Extract price: U$D 1234.56
-            let price = null;
-            const priceMatch = fullText.match(/U\$D\s+([\d.,]+)/);
-            if (priceMatch) {
-                price = parseFloat(priceMatch[1].replace(',', '.'));
-            }
-            // Name is everything before the price
+            // Name is everything before the price marker (or full text if no price marker)
             const name = fullText.replace(/U\$D[\s\d.,+IVA%]+$/, '').trim();
             if (!name || name.length < 3)
                 return;
@@ -316,12 +368,13 @@ class ScraperService {
                     listingImages.push(imgUrl);
                 }
             }
+            // NOTE: priceRaw is NOT set here — prices come from Playwright detail page
             products.push({
                 externalId,
                 name,
                 description: '',
                 stock: 0,
-                priceRaw: priceMatch ? priceMatch[1] : undefined,
+                priceRaw: undefined,
                 stockRaw: undefined,
                 sku: '',
                 imageUrls: listingImages,
@@ -400,16 +453,16 @@ class ScraperService {
                     console.log(`[Scraper] Processing category: ${cat.id} (${cat.idsubrubro1})`);
                     const { products, externalIds } = await this.scrapeCategory(cat.idsubrubro1);
                     // Playwright enrichment — only for NEW products (skip existing)
+                    // Runs in batches of ENRICHMENT_CONCURRENCY for parallel processing
+                    const ENRICHMENT_CONCURRENCY = 3;
                     const existingIds = new Set(this.request.existingProductIds || []);
+                    const productsToEnrich = products.filter(p => !existingIds.has(p.externalId));
+                    const skippedCount = products.length - productsToEnrich.length;
                     let enrichedCount = 0;
-                    let skippedCount = 0;
-                    for (const product of products) {
-                        if (existingIds.has(product.externalId)) {
-                            skippedCount++;
-                            continue; // Skip — already has data from previous scrape
-                        }
-                        if (playwrightEnricher) {
-                            try {
+                    if (playwrightEnricher && productsToEnrich.length > 0) {
+                        for (let i = 0; i < productsToEnrich.length; i += ENRICHMENT_CONCURRENCY) {
+                            const batch = productsToEnrich.slice(i, i + ENRICHMENT_CONCURRENCY);
+                            const results = await Promise.allSettled(batch.map(async (product) => {
                                 const enriched = await playwrightEnricher.enrichProduct(product.externalId, this.config.baseUrl);
                                 if (enriched.priceRaw)
                                     product.priceRaw = enriched.priceRaw;
@@ -423,38 +476,51 @@ class ScraperService {
                                     product.stock = enriched.stock;
                                 if (enriched.imageUrls && enriched.imageUrls.length > 0)
                                     product.imageUrls = enriched.imageUrls;
-                                enrichedCount++;
-                            }
-                            catch (e) {
-                                console.error(`[Playwright] ${product.externalId}: failed - ${e.message}`);
+                            }));
+                            enrichedCount += results.filter(r => r.status === 'fulfilled').length;
+                            for (const f of results.filter(r => r.status === 'rejected')) {
+                                console.error(`[Playwright] enrichment failed: ${f.reason?.message || f}`);
                             }
                         }
                     }
-                    if (skippedCount > 0) {
-                        console.log(`[Playwright] ${cat.id}: ${enrichedCount} new enriched, ${skippedCount} existing skipped`);
+                    if (skippedCount > 0 || enrichedCount > 0) {
+                        console.log(`[Playwright] ${cat.id}: ${enrichedCount} enriched (×${ENRICHMENT_CONCURRENCY} parallel), ${skippedCount} existing skipped`);
                     }
                     // Save products to DB
+                    // NOTE: Only Playwright-enriched products have real price/stock data.
+                    // Listing-only products only have name + listing images.
                     for (const product of products) {
                         try {
                             const upsertPayload = {
                                 externalId: product.externalId,
                                 name: product.name,
-                                description: product.description,
-                                price: product.priceRaw ? this.parsePrice(product.priceRaw) : 0,
-                                priceRaw: product.priceRaw,
-                                priceWithIvaRaw: product.priceWithIvaRaw,
-                                currency: 'USD',
-                                stock: product.stock,
-                                sku: product.sku,
-                                imageUrls: product.cloudinaryUrls && product.cloudinaryUrls.length > 0
-                                    ? product.cloudinaryUrls
-                                    : product.imageUrls,
                                 categories: [cat.id],
-                                attributes: [],
-                                inStock: product.stock > 0 || true,
                             };
-                            console.log(`[Upsert] ${product.externalId}: priceRaw=${upsertPayload.priceRaw ?? 'UNDEFINED'}, ` +
-                                `price=${upsertPayload.price}, imageUrls=${upsertPayload.imageUrls.length}`);
+                            // Only include fields that have real data (not listing defaults)
+                            // With conIva=1, priceRaw already contains the final price (USD + IVA)
+                            if (product.priceRaw) {
+                                upsertPayload.price = this.parsePrice(product.priceRaw);
+                                upsertPayload.priceRaw = product.priceRaw;
+                                upsertPayload.currency = 'USD';
+                            }
+                            if (product.stock > 0) {
+                                upsertPayload.stock = product.stock;
+                            }
+                            if (product.sku) {
+                                upsertPayload.sku = product.sku;
+                            }
+                            if (product.description) {
+                                upsertPayload.description = product.description;
+                            }
+                            const images = product.cloudinaryUrls?.length > 0
+                                ? product.cloudinaryUrls
+                                : product.imageUrls;
+                            if (images?.length > 0) {
+                                upsertPayload.imageUrls = images;
+                            }
+                            console.log(`[Upsert] ${product.externalId}: ` +
+                                `price=${upsertPayload.price ?? 'N/A'}, ` +
+                                `images=${upsertPayload.imageUrls?.length ?? 0}`);
                             const result = await productRepository.atomicUpsertByExternalId(upsertPayload);
                             if (result.created) {
                                 created++;
