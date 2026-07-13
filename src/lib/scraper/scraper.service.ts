@@ -541,7 +541,15 @@ export class ScraperService {
           // Save products to DB
           // NOTE: Only Playwright-enriched products have real price/stock data.
           // Listing-only products only have name + listing images.
+          // For incremental scraper: skip products that already exist (they were already saved)
+          const isIncremental = this.request.source === 'incremental';
+          
           for (const product of products) {
+            // Skip existing products in incremental mode - they were already saved
+            if (isIncremental && existingIds.has(product.externalId)) {
+              continue;
+            }
+            
             try {
               const upsertPayload: any = {
                 externalId: product.externalId,
