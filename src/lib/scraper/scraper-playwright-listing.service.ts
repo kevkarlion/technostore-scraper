@@ -416,7 +416,7 @@ export class ScraperPlaywrightListingService {
         const externalId = idMatch[1];
 
         // Name is everything before the price (or full text if no price)
-        const name = fullText.replace(/U\$D[\s\d.,+IVA%]+$/, '').trim();
+        const name = fullText.replace(/U\$D\s*[\d.,]+(\s*\+\s*IVA\s*[\d.]+%)*(\$\s*[\d.,.]+(\s*\+\s*IVA\s*[\d.]+%)*)*$/, '').trim();
         if (!name || name.length < 3) return;
 
         // Image from listing
@@ -641,10 +641,19 @@ export class ScraperPlaywrightListingService {
                   enriched.name = product.name;
                   enriched.categories = [cat.id];
 
-                  // Parse price from enriched data
-                  let price = enriched.price;
-                  if (price === 0 && enriched.priceRaw) {
-                    let cleaned = enriched.priceRaw.replace(/\./g, '').replace(',', '.');
+                  // ALWAYS derive price from priceRaw to ensure consistency
+                  let price = 0;
+                  if (enriched.priceRaw) {
+                    let cleaned = enriched.priceRaw.replace(/[$€£¥₹]/g, '').replace(/\s/g, '').trim();
+                    const lastDot = cleaned.lastIndexOf('.');
+                    const lastComma = cleaned.lastIndexOf(',');
+                    if (lastComma > lastDot) {
+                      // European: 1.234,56 → 1234.56
+                      cleaned = cleaned.replace(/\./g, '').replace(',', '.');
+                    } else {
+                      // US: 1,234.56 → remove commas
+                      cleaned = cleaned.replace(/,/g, '');
+                    }
                     price = parseFloat(cleaned) || 0;
                   }
 

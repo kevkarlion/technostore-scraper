@@ -390,8 +390,9 @@ export class ScraperService {
       if (!idMatch) return;
       const externalId = idMatch[1];
 
-      // Name is everything before the price marker (or full text if no price marker)
-      const name = fullText.replace(/U\$D[\s\d.,+IVA%]+$/, '').trim();
+// Name is everything before the price marker (or full text if no price marker)
+// Handle formats like: "Name U$D 25,61+ IVA 21%$ 37.134,50+ IVA 21%"
+const name = fullText.replace(/U\$D\s*[\d.,]+(\s*\+\s*IVA\s*[\d.]+%)*(\$\s*[\d.,.]+(\s*\+\s*IVA\s*[\d.]+%)*)*$/, '').trim();
       if (!name || name.length < 3) return;
 
       // Extract image from listing page (CSS background-image)
@@ -559,6 +560,7 @@ export class ScraperService {
 
               // Only include fields that have real data (not listing defaults)
               // With conIva=1, priceRaw already contains the final price (USD + IVA)
+              // Do NOT include costPrice or profitMargin - we only want price
               if (product.priceRaw) {
                 upsertPayload.price = this.parsePrice(product.priceRaw);
                 upsertPayload.priceRaw = product.priceRaw;
