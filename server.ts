@@ -146,24 +146,25 @@ let scraperStoppedInterval: NodeJS.Timeout | null = null;
     // a future shutdown hook can clearInterval() cleanly.
     metricsInterval = metricsAggregator.startPeriodicAggregation(60 * 60 * 1000);
 
+    // DISABLED: scraper-stopped check - not needed since scraper runs manually/on-demand
     // Start periodic scraper-stopped check (every 30 min). Outside the
     // 07:00–24:00 Argentina active window the check is a no-op, so this
     // timer is safe to run 24/7.
-    scraperStoppedInterval = setInterval(async () => {
-      try {
-        if (!healthChecker) return;
-        const alert = await healthChecker.checkScraperStopped();
-        if (alert) {
-          console.warn('[Health] Scraper stopped alert:', alert.message);
-          if (sseEmitter) {
-            sseEmitter.broadcast('health-alert', alert);
-            console.log(`[SSE] Broadcast health-alert: scraper-stopped (${alert.severity})`);
-          }
-        }
-      } catch (e) {
-        console.error('[Health] Error in stopped check:', e);
-      }
-    }, 30 * 60 * 1000);
+    // scraperStoppedInterval = setInterval(async () => {
+    //   try {
+    //     if (!healthChecker) return;
+    //     const alert = await healthChecker.checkScraperStopped();
+    //     if (alert) {
+    //       console.warn('[Health] Scraper stopped alert:', alert.message);
+    //       if (sseEmitter) {
+    //         sseEmitter.broadcast('health-alert', alert);
+    //         console.log(`[SSE] Broadcast health-alert: scraper-stopped (${alert.severity})`);
+    //       }
+    //     }
+    //   } catch (e) {
+    //     console.error('[Health] Error in stopped check:', e);
+    //   }
+    // }, 30 * 60 * 1000);
 
     // Build the monitoring API router. The router is registered with
     // express below via a deferred mount (see "Mount monitoring API"

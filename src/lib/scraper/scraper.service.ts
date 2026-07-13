@@ -32,6 +32,41 @@ import { PlaywrightEnricher } from './playwright-enricher';
 import crypto from 'crypto';
 
 // ============================================================================
+// SLUG GENERATION UTILITIES
+// ============================================================================
+
+/**
+ * Generate a URL-friendly slug from product name.
+ * Matches the implementation in TechnoStore's product-to-presentation.ts
+ */
+function generateProductSlug(name: string): string {
+  if (!name) return '';
+  
+  return name
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '') // Remove accents
+    .replace(/[^a-z0-9]+/g, '-')     // Replace non-alphanumeric with dash
+    .replace(/^-+|-+$/g, '')         // Remove leading/trailing dashes
+    .replace(/-+/g, '-');            // Replace multiple dashes with single
+}
+
+/**
+ * Normalize text for search (lowercase, no accents, no special chars).
+ * Used for searchName field to enable fast text search.
+ */
+function normalizeText(text: string): string {
+  if (!text) return '';
+  return text
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+// ============================================================================
 // PERSISTENT STORE
 // ============================================================================
 
@@ -106,8 +141,14 @@ const productRepository = {
     });
 
     if (!existing) {
+      // Generate slug and searchName for new products
+      const slug = generateProductSlug(product.name);
+      const searchName = normalizeText(product.name);
+      
       await collection.insertOne({
         ...product,
+        slug,
+        searchName,
         supplier: product.supplier || 'jotakp',
         status: 'active',
         inStock: true,
@@ -115,6 +156,7 @@ const productRepository = {
         createdAt: now,
         updatedAt: now,
       });
+      console.log(`[Upsert] ${product.externalId}: CREATED (slug: ${slug})`);
       return { created: true, updated: false, changes: ['CREATE'] };
     }
 
@@ -165,6 +207,13 @@ const productRepository = {
         updateOps[field] = newVal;
         changes.push(field);
       }
+    }
+
+    // If name changed, also regenerate slug and searchName
+    if (changes.includes('name') && product.name) {
+      updateOps.slug = generateProductSlug(product.name);
+      updateOps.searchName = normalizeText(product.name);
+      changes.push('slug', 'searchName');
     }
 
     if (changes.length > 0) {
@@ -326,7 +375,7 @@ export class ScraperService {
     idsubrubro1: number,
     pageNum: number,
   ): Promise<{ products: RawProduct[]; hasMore: boolean }> {
-    const url = `/buscar.aspx?idsubrubro1=${idsubrubro1}&pag=${pageNum}`;
+    const url = `/buscar.aspx?idsubrubro1=${idsubrubro1}&pag=${pageNum}&conIva=1`;
     const html = await safeGet(this.http, url);
     const $ = cheerio.load(html);
 
@@ -501,10 +550,10 @@ export class ScraperService {
               };
 
               // Only include fields that have real data (not listing defaults)
+              // With conIva=1, priceRaw already contains the final price (USD + IVA)
               if (product.priceRaw) {
                 upsertPayload.price = this.parsePrice(product.priceRaw);
                 upsertPayload.priceRaw = product.priceRaw;
-                upsertPayload.priceWithIvaRaw = product.priceWithIvaRaw;
                 upsertPayload.currency = 'USD';
               }
               if (product.stock > 0) {

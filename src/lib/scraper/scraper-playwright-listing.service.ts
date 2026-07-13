@@ -165,7 +165,7 @@ class PlaywrightListingEnricher {
 
     const page = await this.context.newPage();
     try {
-      const url = `${this.baseUrl}/buscar.aspx?idsubrubro1=${idsubrubro1}&pag=${pageNum}`;
+      const url = `${this.baseUrl}/buscar.aspx?idsubrubro1=${idsubrubro1}&pag=${pageNum}&conIva=1`;
       await page.goto(url, { waitUntil: 'networkidle', timeout: 20000 });
 
       // Wait for products to render
@@ -400,7 +400,7 @@ export class ScraperPlaywrightListingService {
     const maxPages = 20;
 
     for (let pageNum = 1; pageNum <= maxPages; pageNum++) {
-      const url = `/buscar.aspx?idsubrubro1=${idsubrubro1}&pag=${pageNum}`;
+      const url = `/buscar.aspx?idsubrubro1=${idsubrubro1}&pag=${pageNum}&conIva=1`;
       const html = await safeGet(this.http, url);
       const $ = cheerio.load(html);
 
