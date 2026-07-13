@@ -144,10 +144,24 @@ const productRepository = {
       'imageUrls',
     ];
 
+    // Helper: check if a value is "empty" (scraper default, not real data)
+    // null and undefined are equivalent "no data" states
+    const isEmpty = (val: any): boolean =>
+      val === undefined || val === null || val === '' || val === 0 ||
+      (Array.isArray(val) && val.length === 0);
+
     for (const field of fieldsToCompare) {
       const existingVal = existing[field];
       const newVal = product[field];
+
+      // Don't overwrite valid existing data with empty/zero defaults
       if (JSON.stringify(existingVal) !== JSON.stringify(newVal)) {
+        // Skip if: new value is empty (and existing is also empty or has data)
+        // This prevents overwriting null/undefined with null/undefined (no-op)
+        // And prevents overwriting valid data with empty defaults
+        if (isEmpty(newVal)) {
+          continue;
+        }
         updateOps[field] = newVal;
         changes.push(field);
       }
@@ -305,6 +319,8 @@ export class ScraperService {
   /**
    * Scrape a single page of a category listing.
    * Returns the list of raw products found on that page.
+   * NOTE: Prices are NOT extracted from listing (they're JS-rendered).
+   * Only product IDs, names, and listing images are captured here.
    */
   async scrapeCategoryPage(
     idsubrubro1: number,
@@ -325,14 +341,7 @@ export class ScraperService {
       if (!idMatch) return;
       const externalId = idMatch[1];
 
-      // Extract price: U$D 1234.56
-      let price: number | null = null;
-      const priceMatch = fullText.match(/U\$D\s+([\d.,]+)/);
-      if (priceMatch) {
-        price = parseFloat(priceMatch[1].replace(',', '.'));
-      }
-
-      // Name is everything before the price
+      // Name is everything before the price marker (or full text if no price marker)
       const name = fullText.replace(/U\$D[\s\d.,+IVA%]+$/, '').trim();
       if (!name || name.length < 3) return;
 
@@ -348,12 +357,13 @@ export class ScraperService {
         }
       }
 
+      // NOTE: priceRaw is NOT set here — prices come from Playwright detail page
       products.push({
         externalId,
         name,
         description: '',
         stock: 0,
-        priceRaw: priceMatch ? priceMatch[1] : undefined,
+        priceRaw: undefined,
         stockRaw: undefined,
         sku: '',
         imageUrls: listingImages,
@@ -480,29 +490,43 @@ export class ScraperService {
           }
 
           // Save products to DB
+          // NOTE: Only Playwright-enriched products have real price/stock data.
+          // Listing-only products only have name + listing images.
           for (const product of products) {
             try {
-              const upsertPayload = {
+              const upsertPayload: any = {
                 externalId: product.externalId,
                 name: product.name,
-                description: product.description,
-                price: product.priceRaw ? this.parsePrice(product.priceRaw) : 0,
-                priceRaw: product.priceRaw,
-                priceWithIvaRaw: product.priceWithIvaRaw,
-                currency: 'USD',
-                stock: product.stock,
-                sku: product.sku,
-                imageUrls: product.cloudinaryUrls && product.cloudinaryUrls.length > 0
-                  ? product.cloudinaryUrls
-                  : product.imageUrls,
                 categories: [cat.id],
-                attributes: [],
-                inStock: product.stock > 0 || true,
               };
 
+              // Only include fields that have real data (not listing defaults)
+              if (product.priceRaw) {
+                upsertPayload.price = this.parsePrice(product.priceRaw);
+                upsertPayload.priceRaw = product.priceRaw;
+                upsertPayload.priceWithIvaRaw = product.priceWithIvaRaw;
+                upsertPayload.currency = 'USD';
+              }
+              if (product.stock > 0) {
+                upsertPayload.stock = product.stock;
+              }
+              if (product.sku) {
+                upsertPayload.sku = product.sku;
+              }
+              if (product.description) {
+                upsertPayload.description = product.description;
+              }
+              const images = product.cloudinaryUrls?.length > 0
+                ? product.cloudinaryUrls
+                : product.imageUrls;
+              if (images?.length > 0) {
+                upsertPayload.imageUrls = images;
+              }
+
               console.log(
-                `[Upsert] ${product.externalId}: priceRaw=${upsertPayload.priceRaw ?? 'UNDEFINED'}, ` +
-                `price=${upsertPayload.price}, imageUrls=${upsertPayload.imageUrls.length}`,
+                `[Upsert] ${product.externalId}: ` +
+                `price=${upsertPayload.price ?? 'N/A'}, ` +
+                `images=${upsertPayload.imageUrls?.length ?? 0}`,
               );
 
               const result = await productRepository.atomicUpsertByExternalId(upsertPayload);

@@ -168,6 +168,7 @@ export class PlaywrightEnricher {
       const result: EnrichedProductData = {};
 
       // Scrape all data from the rendered DOM
+      // NOTE: no inner functions — Playwright's transpiler generates __name refs that break
       const scraped = await page.evaluate(() => {
         const data: Record<string, any> = {};
 
@@ -205,32 +206,32 @@ export class PlaywrightEnricher {
         // Images — main image + thumbnails (deduplicated, normalized)
         const imageSet = new Set<string>();
         const images: string[] = [];
-        
-        const addImage = (src: string) => {
-          // Normalize: strip leading slash, lowercase for dedup
-          const normalized = src.replace(/^\/+/, '').toLowerCase();
-          if (!imageSet.has(normalized)) {
-            imageSet.add(normalized);
-            images.push(src.replace(/^\/+/, '')); // store without leading slash
-          }
-        };
-        
+
         // Main image: img#artImg src="imagenes/000029481.PNG"
         const mainImg = document.getElementById('artImg') as HTMLImageElement | null;
         if (mainImg && mainImg.src && mainImg.src.includes('imagenes/')) {
-          const mainSrc = mainImg.src.replace(/^https?:\/\/[^/]+/, '');
-          addImage(mainSrc);
+          const mainSrc = mainImg.src.replace(/^https?:\/\/[^/]+/, '').replace(/^\/+/, '');
+          const normalized = mainSrc.toLowerCase();
+          if (!imageSet.has(normalized)) {
+            imageSet.add(normalized);
+            images.push(mainSrc);
+          }
         }
-        
+
         // Thumbnails: div.tg-img-overlay.artImg data-src="imagenes/..."
         const artImgs = document.querySelectorAll('div.tg-img-overlay.artImg');
         artImgs.forEach((el) => {
           const src = el.getAttribute('data-src');
           if (src && src.includes('imagenes/')) {
-            addImage(src);
+            const clean = src.replace(/^\/+/, '');
+            const normalized = clean.toLowerCase();
+            if (!imageSet.has(normalized)) {
+              imageSet.add(normalized);
+              images.push(clean);
+            }
           }
         });
-        
+
         data.imageUrls = images.slice(0, 10);
 
         return data;

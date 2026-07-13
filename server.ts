@@ -458,6 +458,26 @@ app.post('/scraper/incremental', async (req, res) => {
   }
 });
 
+// NEW: Playwright Listing scraper - detects price changes for existing products
+app.post('/scraper/playwright-listing', async (req, res) => {
+  let release: (() => void) | null = null;
+  try {
+    release = tryAcquireScraper();
+    const { categoryId } = req.body;
+    res.json({ success: true, message: 'Playwright Listing scrape started in background', categoryId, startedAt: new Date().toISOString() });
+
+    const { runScraperPlaywrightListing } = await import('./src/lib/scraper/scraper-playwright-listing.service');
+    const result = await runScraperPlaywrightListing({ categoryId, source: 'playwright-listing' });
+
+    console.log(`[Playwright Listing] Run complete: ${result.created} created, ${result.updated} updated`);
+  } catch (error: any) {
+    if (!res.headersSent) res.status(error.statusCode || 500).json({ error: error.message });
+    console.error('[Playwright Listing] Run failed:', error.message);
+  } finally {
+    if (release) release();
+  }
+});
+
 // Debug endpoint to fix discontinued products
 app.post('/debug/fix-discontinued', async (req, res) => {
   try {
