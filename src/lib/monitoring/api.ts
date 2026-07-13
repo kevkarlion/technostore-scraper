@@ -135,6 +135,11 @@ export function createMonitoringRouter(
         : 0;
       const totalProductsFound = last7Days.reduce((sum, e) => sum + (e.productsFound || 0), 0);
       const totalProductsUpdated = last7Days.reduce((sum, e) => sum + (e.productsUpdated || 0), 0);
+      const totalProductsCreated = last7Days.reduce((sum, e) => sum + (e.productsCreated || 0), 0);
+
+      // Total discontinued products in DB
+      const productsCollection = db.collection('products');
+      const totalDiscontinued = await productsCollection.countDocuments({ status: 'discontinued' });
 
       // Errors in last 24h
       const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
@@ -160,6 +165,8 @@ export function createMonitoringRouter(
         avgDurationLast7Days: avgDurationMs,
         totalProductsFound,
         totalProductsUpdated,
+        totalProductsCreated,
+        totalProductsDiscontinued: totalDiscontinued,
         errorsLast24h: errors24h,
         successRateLast7Days: successRate,
       };

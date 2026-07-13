@@ -712,9 +712,19 @@
           <span class="stat-sub">En todas las categorías</span>
         </div>
         <div class="stat-card">
+          <span class="stat-label">Productos Creados (7d)</span>
+          <span class="stat-value">${(data.totalProductsCreated ?? 0).toLocaleString()}</span>
+          <span class="stat-sub">En todas las categorías</span>
+        </div>
+        <div class="stat-card">
           <span class="stat-label">Productos Actualizados (7d)</span>
           <span class="stat-value">${(data.totalProductsUpdated ?? 0).toLocaleString()}</span>
           <span class="stat-sub">En todas las categorías</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">Productos Descontinuados</span>
+          <span class="stat-value" style="color: var(--warning)">${(data.totalProductsDiscontinued ?? 0).toLocaleString()}</span>
+          <span class="stat-sub">Total en la base de datos</span>
         </div>
         <div class="stat-card">
           <span class="stat-label">Último Disparador</span>

@@ -73,6 +73,8 @@ export interface DashboardStatus {
   avgDurationLast7Days: number;
   totalProductsFound: number;
   totalProductsUpdated: number;
+  totalProductsDiscontinued: number;
+  totalProductsCreated: number;
   errorsLast24h: number;
   successRateLast7Days: number;
 }
