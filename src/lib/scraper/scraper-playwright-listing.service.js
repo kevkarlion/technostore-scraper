@@ -55,6 +55,31 @@ const playwright_1 = require("playwright");
 const config_1 = require("./config");
 const http_client_1 = require("./http-client");
 // ============================================================================
+// SLUG GENERATION UTILITIES
+// ============================================================================
+function generateProductSlug(name) {
+    if (!name)
+        return '';
+    return name
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        .replace(/-+/g, '-');
+}
+function normalizeText(text) {
+    if (!text)
+        return '';
+    return text
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^a-z0-9\s]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+// ============================================================================
 // PERSISTENT STORE
 // ============================================================================
 let dbInstance = null;
@@ -410,8 +435,12 @@ class ScraperPlaywrightListingService {
             supplier: product.supplier || 'jotakp',
         });
         if (!existing) {
+            const slug = generateProductSlug(product.name);
+            const searchName = normalizeText(product.name);
             await collection.insertOne({
                 ...product,
+                slug,
+                searchName,
                 supplier: product.supplier || 'jotakp',
                 status: 'active',
                 inStock: true,
@@ -419,6 +448,7 @@ class ScraperPlaywrightListingService {
                 createdAt: now,
                 updatedAt: now,
             });
+            console.log(`[Upsert] ${product.externalId}: CREATED (slug: ${slug})`);
             return { created: true, updated: false, changes: ['CREATE'] };
         }
         const changes = [];
@@ -459,6 +489,12 @@ class ScraperPlaywrightListingService {
             }
         }
         if (changes.length > 0) {
+            // If name changed, regenerate slug and searchName
+            if (changes.includes('name') && product.name) {
+                updateOps.slug = generateProductSlug(product.name);
+                updateOps.searchName = normalizeText(product.name);
+                changes.push('slug', 'searchName');
+            }
             await collection.updateOne({ _id: existing._id }, { $set: updateOps });
             console.log(`[Upsert] ${product.externalId}: UPDATED — ${changes.join(', ')}`);
             return { created: false, updated: true, changes };

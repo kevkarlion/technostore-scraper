@@ -229,12 +229,13 @@ class PlaywrightEnricher {
             result.sku = scraped.sku;
             result.stock = scraped.stock;
             result.imageUrls = scraped.imageUrls;
-            console.log(`[Playwright] ${externalId}: ` +
-                `price=${result.priceRaw ?? 'N/A'}, ` +
-                `ars=${result.priceWithIvaRaw ?? 'N/A'}, ` +
-                `desc=${result.description?.length ?? 0}ch, ` +
-                `sku=${result.sku ?? 'N/A'}, ` +
-                `images=${result.imageUrls?.length ?? 0}`);
+            console.log(`[Playwright] ${externalId}: enriched ` +
+                `| price=${result.priceRaw ?? 'N/A'} USD` +
+                `${result.priceWithIvaRaw ? ` / $${result.priceWithIvaRaw} ARS` : ''}` +
+                ` | desc=${result.description?.length ?? 0}ch` +
+                ` | sku=${result.sku ?? 'N/A'}` +
+                ` | stock=${result.stock ?? 'N/A'}` +
+                ` | images=${result.imageUrls?.length ?? 0}`);
             return result;
         }
         finally {

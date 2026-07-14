@@ -141,21 +141,29 @@ async function preCheckCategories(categoryFilter) {
                 const db = await getDb();
                 const existing = await db.collection('scraper_state').findOne({ categoryId: cat.id });
                 const hasChanged = !existing || existing.contentHash !== preview.contentHash;
+                // Only update hash/count/price — productIds are maintained by full scrape
                 await db.collection('scraper_state').updateOne({ categoryId: cat.id }, {
                     $set: {
                         categoryId: cat.id,
                         idsubrubro1: cat.idsubrubro1,
                         contentHash: preview.contentHash,
                         productCount: preview.productCount,
-                        productIds: preview.productIds,
                         firstPriceUsd: preview.firstPriceUsd,
                         capturedAt: new Date(),
                     },
+                    // Initialize productIds only on first insert
+                    $setOnInsert: {
+                        productIds: preview.productIds,
+                    },
                 }, { upsert: true });
+                const state = await db.collection('scraper_state').findOne({ categoryId: cat.id });
+                const storedCount = state?.productIds?.length || 0;
+                console.log(`[Pre-check] ${cat.id}: ${hasChanged ? 'CHANGED' : 'unchanged'} ` +
+                    `| page1=${preview.productCount} products | stored=${storedCount} total IDs`);
                 return { categoryId: cat.id, status: hasChanged ? 'changed' : 'unchanged' };
             }
             catch (e) {
-                console.error(`[Incremental] Error pre-checking ${cat.id}:`, e.message);
+                console.error(`[Pre-check] ${cat.id}: ERROR — ${e.message}`);
                 return { categoryId: cat.id, status: 'error' };
             }
         }));
@@ -233,6 +241,7 @@ async function runIncrementalScraper(forceFullScrape = false, categoryId, skipEx
             const state = await db.collection('scraper_state').findOne({ categoryId });
             if (state?.productIds?.length > 0) {
                 existingProductIdsByCategory.set(categoryId, state.productIds);
+                console.log(`[Incremental] ${categoryId}: ${state.productIds.length} known products from previous scrape — Playwright will skip these`);
             }
         }
     }
@@ -244,7 +253,7 @@ async function runIncrementalScraper(forceFullScrape = false, categoryId, skipEx
     const startTime = Date.now();
     const MAX_PARALLEL = 4;
     // Step 2a: Mark discontinued + update timestamp for UNCHANGED categories
-    // Uses the product IDs captured during pre-check (already in scraper_state).
+    // Uses the product IDs captured during the last successful full scrape (already in scraper_state).
     let totalDiscontinued = 0;
     for (const categoryId of preCheckResult.unchanged) {
         try {
@@ -253,13 +262,16 @@ async function runIncrementalScraper(forceFullScrape = false, categoryId, skipEx
                 const discontinuedCount = await markDiscontinuedFromIds(categoryId, state.productIds);
                 totalDiscontinued += discontinuedCount;
                 if (discontinuedCount > 0) {
-                    console.log(`[Incremental] Marked ${discontinuedCount} discontinued in unchanged ${categoryId}`);
+                    console.log(`[Discontinued] ${categoryId}: marked ${discontinuedCount} products as discontinued (from ${state.productIds.length} known IDs)`);
+                }
+                else {
+                    console.log(`[Discontinued] ${categoryId}: no changes (all ${state.productIds.length} products still active)`);
                 }
             }
             await db.collection('scraper_state').updateOne({ categoryId }, { $set: { lastScrapeAt: new Date() } });
         }
         catch (e) {
-            console.error(`[Incremental] Error updating unchanged ${categoryId}:`, e.message);
+            console.error(`[Discontinued] ${categoryId}: ERROR — ${e.message}`);
         }
     }
     scrapeResults.discontinued = totalDiscontinued;
@@ -272,8 +284,9 @@ async function runIncrementalScraper(forceFullScrape = false, categoryId, skipEx
                 // Pass existing product IDs so Playwright only enriches NEW products
                 const existingProductIds = existingProductIdsByCategory.get(categoryId) || [];
                 const result = await (0, scraper_service_1.runScraper)({ categoryId, source: 'incremental', skipLogin: true, existingProductIds }, sharedHttp);
-                // Update state
-                await db.collection('scraper_state').updateOne({ categoryId }, { $set: { lastScrapeAt: new Date() } });
+                // Update state: timestamp + ALL product IDs found in this scrape
+                const allExternalIds = result.categoryExternalIds?.[categoryId] || [];
+                await db.collection('scraper_state').updateOne({ categoryId }, { $set: { lastScrapeAt: new Date(), productIds: allExternalIds } });
                 return result;
             }
             catch (e) {
@@ -294,7 +307,10 @@ async function runIncrementalScraper(forceFullScrape = false, categoryId, skipEx
         }
     }
     scrapeResults.durationMs = Date.now() - startTime;
-    console.log(`[Incremental] Done: ${scrapeResults.created} created, ${scrapeResults.updated} updated (scraped ${toScrape.length}/${categories.length} categories)`);
+    console.log(`[Incremental] Done in ${(scrapeResults.durationMs / 1000).toFixed(1)}s: ` +
+        `${scrapeResults.created} created, ${scrapeResults.updated} updated, ` +
+        `${scrapeResults.discontinued} discontinued | ` +
+        `scraped ${toScrape.length}/${categories.length} categories`);
     return {
         success: true,
         preCheck: {

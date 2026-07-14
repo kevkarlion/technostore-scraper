@@ -443,8 +443,8 @@ const name = fullText.replace(/U\$D\s*[\d.,]+(\s*\+\s*IVA\s*[\d.]+%)*(\$\s*[\d.,
     const maxPages = 20;
 
     for (let pageNum = 1; pageNum <= maxPages; pageNum++) {
-      console.log(`[Scraper] Scraping page ${pageNum} (idsubrubro1=${idsubrubro1})`);
       const { products, hasMore } = await this.scrapeCategoryPage(idsubrubro1, pageNum);
+      console.log(`[Scraper] Page ${pageNum}: ${products.length} products extracted${hasMore ? ' (more pages)' : ' (last page)'}`);
 
       if (products.length === 0) break;
 
@@ -482,6 +482,7 @@ const name = fullText.replace(/U\$D\s*[\d.,]+(\s*\+\s*IVA\s*[\d.]+%)*(\$\s*[\d.,
     const createdIds: string[] = [];
     const updatedIds: string[] = [];
     const errors: string[] = [];
+    const categoryExternalIds: Record<string, string[]> = {};
 
     let playwrightEnricher: PlaywrightEnricher | null = null;
 
@@ -541,7 +542,11 @@ const name = fullText.replace(/U\$D\s*[\d.,]+(\s*\+\s*IVA\s*[\d.]+%)*(\$\s*[\d.,
           }
 
           if (skippedCount > 0 || enrichedCount > 0) {
-            console.log(`[Playwright] ${cat.id}: ${enrichedCount} enriched (×${ENRICHMENT_CONCURRENCY} parallel), ${skippedCount} existing skipped`);
+            console.log(
+              `[Playwright] ${cat.id}: ${enrichedCount} enriched (×${ENRICHMENT_CONCURRENCY} parallel), ` +
+              `${skippedCount} existing skipped | ` +
+              `total=${products.length} products found`
+            );
           }
 
           // Save products to DB
@@ -588,7 +593,9 @@ const name = fullText.replace(/U\$D\s*[\d.,]+(\s*\+\s*IVA\s*[\d.]+%)*(\$\s*[\d.,
               console.log(
                 `[Upsert] ${product.externalId}: ` +
                 `costPrice=${upsertPayload.costPrice ?? 'N/A'}, ` +
-                `images=${upsertPayload.imageUrls?.length ?? 0}`,
+                `images=${upsertPayload.imageUrls?.length ?? 0}` +
+                `${upsertPayload.sku ? `, sku=${upsertPayload.sku}` : ''}` +
+                `${upsertPayload.stock ? `, stock=${upsertPayload.stock}` : ''}`
               );
 
               const result = await productRepository.atomicUpsertByExternalId(upsertPayload);
@@ -636,7 +643,14 @@ const name = fullText.replace(/U\$D\s*[\d.,]+(\s*\+\s*IVA\s*[\d.]+%)*(\$\s*[\d.,
             }
           }
 
-          console.log(`[Scraper] Category ${cat.id}: ${products.length} products (${created} created, ${updated} updated)`);
+          // Collect all external IDs found for this category (used by incremental scraper to update state)
+          categoryExternalIds[cat.id] = externalIds;
+
+          console.log(
+            `[Scraper] ${cat.id}: ${products.length} products found | ` +
+            `${created} created, ${updated} updated, ` +
+            `${externalIds.length} total IDs stored for next pre-check`
+          );
         } catch (e: any) {
           errors.push(`Error scraping category ${cat.id}: ${e.message}`);
           console.error(`[Scraper] Error processing category ${cat.id}:`, e.message);
@@ -658,6 +672,7 @@ const name = fullText.replace(/U\$D\s*[\d.,]+(\s*\+\s*IVA\s*[\d.]+%)*(\$\s*[\d.,
       errors,
       durationMs: Date.now() - startTime,
       timestamp: new Date(),
+      categoryExternalIds,
     };
   }
 

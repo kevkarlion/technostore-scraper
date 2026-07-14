@@ -132,8 +132,12 @@ const productRepository = {
             return { created: false, updated: false };
         }
         else {
+            const slug = generateProductSlug(product.name);
+            const searchName = normalizeText(product.name);
             await collection.insertOne({
                 ...product,
+                slug,
+                searchName,
                 supplier: 'jotakp',
                 status: 'active',
                 inStock: true,
@@ -428,6 +432,7 @@ class ScraperService {
         const createdIds = [];
         const updatedIds = [];
         const errors = [];
+        const categoryExternalIds = {};
         let playwrightEnricher = null;
         try {
             // Login first (skip if using a pre-authenticated shared session)
@@ -485,7 +490,9 @@ class ScraperService {
                         }
                     }
                     if (skippedCount > 0 || enrichedCount > 0) {
-                        console.log(`[Playwright] ${cat.id}: ${enrichedCount} enriched (×${ENRICHMENT_CONCURRENCY} parallel), ${skippedCount} existing skipped`);
+                        console.log(`[Playwright] ${cat.id}: ${enrichedCount} enriched (×${ENRICHMENT_CONCURRENCY} parallel), ` +
+                            `${skippedCount} existing skipped | ` +
+                            `total=${products.length} products found`);
                     }
                     // Save products to DB
                     // NOTE: Only Playwright-enriched products have real price/stock data.
@@ -526,7 +533,9 @@ class ScraperService {
                             }
                             console.log(`[Upsert] ${product.externalId}: ` +
                                 `costPrice=${upsertPayload.costPrice ?? 'N/A'}, ` +
-                                `images=${upsertPayload.imageUrls?.length ?? 0}`);
+                                `images=${upsertPayload.imageUrls?.length ?? 0}` +
+                                `${upsertPayload.sku ? `, sku=${upsertPayload.sku}` : ''}` +
+                                `${upsertPayload.stock ? `, stock=${upsertPayload.stock}` : ''}`);
                             const result = await productRepository.atomicUpsertByExternalId(upsertPayload);
                             if (result.created) {
                                 created++;
@@ -569,7 +578,11 @@ class ScraperService {
                             console.log(`[Scraper] Marked ${discontinued} products as discontinued in ${cat.id}`);
                         }
                     }
-                    console.log(`[Scraper] Category ${cat.id}: ${products.length} products (${created} created, ${updated} updated)`);
+                    // Collect all external IDs found for this category (used by incremental scraper to update state)
+                    categoryExternalIds[cat.id] = externalIds;
+                    console.log(`[Scraper] ${cat.id}: ${products.length} products found | ` +
+                        `${created} created, ${updated} updated, ` +
+                        `${externalIds.length} total IDs stored for next pre-check`);
                 }
                 catch (e) {
                     errors.push(`Error scraping category ${cat.id}: ${e.message}`);
@@ -593,6 +606,7 @@ class ScraperService {
             errors,
             durationMs: Date.now() - startTime,
             timestamp: new Date(),
+            categoryExternalIds,
         };
     }
     // ============================================================================

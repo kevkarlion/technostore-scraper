@@ -126,6 +126,7 @@ export async function preCheckCategories(categoryFilter?: string[]): Promise<{
           const existing = await db.collection('scraper_state').findOne({ categoryId: cat.id });
           const hasChanged = !existing || existing.contentHash !== preview.contentHash;
 
+          // Only update hash/count/price — productIds are maintained by full scrape
           await db.collection('scraper_state').updateOne(
             { categoryId: cat.id },
             {
@@ -134,17 +135,27 @@ export async function preCheckCategories(categoryFilter?: string[]): Promise<{
                 idsubrubro1: cat.idsubrubro1,
                 contentHash: preview.contentHash,
                 productCount: preview.productCount,
-                productIds: preview.productIds,
                 firstPriceUsd: preview.firstPriceUsd,
                 capturedAt: new Date(),
+              },
+              // Initialize productIds only on first insert
+              $setOnInsert: {
+                productIds: preview.productIds,
               },
             },
             { upsert: true },
           );
 
+          const state = await db.collection('scraper_state').findOne({ categoryId: cat.id });
+          const storedCount = state?.productIds?.length || 0;
+          console.log(
+            `[Pre-check] ${cat.id}: ${hasChanged ? 'CHANGED' : 'unchanged'} ` +
+            `| page1=${preview.productCount} products | stored=${storedCount} total IDs`
+          );
+
           return { categoryId: cat.id, status: hasChanged ? ('changed' as const) : ('unchanged' as const) };
         } catch (e: any) {
-          console.error(`[Incremental] Error pre-checking ${cat.id}:`, e.message);
+          console.error(`[Pre-check] ${cat.id}: ERROR — ${e.message}`);
           return { categoryId: cat.id, status: 'error' as const };
         }
       }),
@@ -158,7 +169,7 @@ export async function preCheckCategories(categoryFilter?: string[]): Promise<{
   }
 
   console.log(
-    `[Incremental] Pre-check complete: ${result.changed.length} changed, ${result.unchanged.length} unchanged, ${result.errors.length} errors`,
+    `[Incremental] Pre-check complete: ${result.changed.length} changed, ${result.unchanged.length} unchanged, ${result.errors.length} errors`
   );
   return result;
 }
@@ -236,6 +247,9 @@ export async function runIncrementalScraper(forceFullScrape: boolean = false, ca
       const state = await db.collection('scraper_state').findOne({ categoryId });
       if (state?.productIds?.length > 0) {
         existingProductIdsByCategory.set(categoryId, state.productIds);
+        console.log(
+          `[Incremental] ${categoryId}: ${state.productIds.length} known products from previous scrape — Playwright will skip these`
+        );
       }
     }
   } else {
@@ -243,7 +257,7 @@ export async function runIncrementalScraper(forceFullScrape: boolean = false, ca
   }
 
   console.log(
-    `[Incremental] Pre-check: ${preCheckResult.changed.length} changed, ${preCheckResult.unchanged.length} unchanged, ${preCheckResult.errors.length} errors — scraping ${toScrape.length} categories`,
+    `[Incremental] Pre-check: ${preCheckResult.changed.length} changed, ${preCheckResult.unchanged.length} unchanged, ${preCheckResult.errors.length} errors — scraping ${toScrape.length} categories`
   );
 
   const scrapeResults = { created: 0, updated: 0, createdIds: [] as string[], updatedIds: [] as string[], errors: [] as string[], durationMs: 0, discontinued: 0 };
@@ -251,7 +265,7 @@ export async function runIncrementalScraper(forceFullScrape: boolean = false, ca
   const MAX_PARALLEL = 4;
 
   // Step 2a: Mark discontinued + update timestamp for UNCHANGED categories
-  // Uses the product IDs captured during pre-check (already in scraper_state).
+  // Uses the product IDs captured during the last successful full scrape (already in scraper_state).
   let totalDiscontinued = 0;
   for (const categoryId of preCheckResult.unchanged) {
     try {
@@ -260,7 +274,9 @@ export async function runIncrementalScraper(forceFullScrape: boolean = false, ca
         const discontinuedCount = await markDiscontinuedFromIds(categoryId, state.productIds);
         totalDiscontinued += discontinuedCount;
         if (discontinuedCount > 0) {
-          console.log(`[Incremental] Marked ${discontinuedCount} discontinued in unchanged ${categoryId}`);
+          console.log(`[Discontinued] ${categoryId}: marked ${discontinuedCount} products as discontinued (from ${state.productIds.length} known IDs)`);
+        } else {
+          console.log(`[Discontinued] ${categoryId}: no changes (all ${state.productIds.length} products still active)`);
         }
       }
       await db.collection('scraper_state').updateOne(
@@ -268,7 +284,7 @@ export async function runIncrementalScraper(forceFullScrape: boolean = false, ca
         { $set: { lastScrapeAt: new Date() } },
       );
     } catch (e: any) {
-      console.error(`[Incremental] Error updating unchanged ${categoryId}:`, e.message);
+      console.error(`[Discontinued] ${categoryId}: ERROR — ${e.message}`);
     }
   }
   scrapeResults.discontinued = totalDiscontinued;
@@ -288,10 +304,11 @@ export async function runIncrementalScraper(forceFullScrape: boolean = false, ca
             sharedHttp,
           );
 
-          // Update state
+          // Update state: timestamp + ALL product IDs found in this scrape
+          const allExternalIds = result.categoryExternalIds?.[categoryId] || [];
           await db.collection('scraper_state').updateOne(
             { categoryId },
-            { $set: { lastScrapeAt: new Date() } },
+            { $set: { lastScrapeAt: new Date(), productIds: allExternalIds } },
           );
 
           return result;
@@ -314,7 +331,12 @@ export async function runIncrementalScraper(forceFullScrape: boolean = false, ca
   }
 
   scrapeResults.durationMs = Date.now() - startTime;
-  console.log(`[Incremental] Done: ${scrapeResults.created} created, ${scrapeResults.updated} updated (scraped ${toScrape.length}/${categories.length} categories)`);
+  console.log(
+    `[Incremental] Done in ${(scrapeResults.durationMs / 1000).toFixed(1)}s: ` +
+    `${scrapeResults.created} created, ${scrapeResults.updated} updated, ` +
+    `${scrapeResults.discontinued} discontinued | ` +
+    `scraped ${toScrape.length}/${categories.length} categories`
+  );
 
   return {
     success: true,

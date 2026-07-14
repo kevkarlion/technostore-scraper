@@ -97,6 +97,8 @@ export interface ScraperResult {
   errors: string[];
   durationMs: number;
   timestamp: Date;
+  /** All external IDs found per category during this scrape (keyed by category ID) */
+  categoryExternalIds?: Record<string, string[]>;
 }
 
 /**
