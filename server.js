@@ -466,9 +466,23 @@ app.post('/scraper/playwright-listing', async (req, res) => {
     try {
         release = tryAcquireScraper();
         const { categoryId } = req.body;
-        res.json({ success: true, message: 'Playwright Listing scrape started in background', categoryId, startedAt: new Date().toISOString() });
-        const { runScraperPlaywrightListing } = await Promise.resolve().then(() => __importStar(require('./src/lib/scraper/scraper-playwright-listing.service')));
-        const result = await runScraperPlaywrightListing({ categoryId, source: 'playwright-listing' });
+        // Record execution for metrics
+        const { result, executionId } = await executionRecorder.recordExecution('http', async () => {
+            const { runScraperPlaywrightListing } = await Promise.resolve().then(() => __importStar(require('./src/lib/scraper/scraper-playwright-listing.service')));
+            return await runScraperPlaywrightListing({ categoryId, source: 'playwright-listing' });
+        }, {
+            extractStats: (r) => ({
+                productsFound: (r.created || 0) + (r.updated || 0),
+                productsCreated: r.created || 0,
+                productsUpdated: r.updated || 0,
+                errors: r.errors || [],
+                createdProductIds: r.createdIds || [],
+                updatedProductIds: r.updatedIds || [],
+            }),
+            categoryId: categoryId || 'all',
+            triggerSource: 'http',
+        });
+        res.json({ success: true, message: 'Playwright Listing scrape started', executionId, categoryId, startedAt: new Date().toISOString() });
         console.log(`[Playwright Listing] Run complete: ${result.created} created, ${result.updated} updated`);
     }
     catch (error) {

@@ -496,7 +496,7 @@ export class ScraperPlaywrightListingService {
     const fieldsToCompare = [
       'name',
       'description',
-      'price',
+      'costPrice',
       'currency',
       'stock',
       'sku',
@@ -510,7 +510,8 @@ export class ScraperPlaywrightListingService {
 
       if (JSON.stringify(existingVal) !== JSON.stringify(newVal)) {
         // Don't overwrite valid existing data with empty/zero defaults
-        if (isEmpty(newVal) && !isEmpty(existingVal)) {
+        // Exception: costPrice=0 is a valid supplier value, not an empty default
+        if (isEmpty(newVal) && !isEmpty(existingVal) && field !== 'costPrice') {
           continue;
         }
         updateOps[field] = newVal;
@@ -656,12 +657,20 @@ export class ScraperPlaywrightListingService {
                     price = parseFloat(cleaned) || 0;
                   }
 
+                  // Fallback: if detail page didn't yield a price, use the listing price
+                  if (!price) {
+                    const listingPrice = listingPrices.get(product.externalId);
+                    if (listingPrice) {
+                      price = listingPrice.price;
+                    }
+                  }
+
                   // Upsert to DB
                   const upsertResult = await this.upsertProduct({
                     externalId: enriched.externalId,
                     name: enriched.name,
                     description: enriched.description,
-                    price,
+                    costPrice: price,
                     currency: 'USD',
                     stock: enriched.stock,
                     sku: enriched.sku,

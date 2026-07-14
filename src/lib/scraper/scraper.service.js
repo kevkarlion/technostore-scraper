@@ -183,8 +183,7 @@ const productRepository = {
         const fieldsToCompare = [
             'name',
             'description',
-            'price',
-            'priceRaw',
+            'costPrice',
             'currency',
             'stock',
             'sku',
@@ -203,7 +202,8 @@ const productRepository = {
                 // Skip if: new value is empty (and existing is also empty or has data)
                 // This prevents overwriting null/undefined with null/undefined (no-op)
                 // And prevents overwriting valid data with empty defaults
-                if (isEmpty(newVal)) {
+                // Exception: costPrice=0 is a valid supplier value, not an empty default
+                if (isEmpty(newVal) && field !== 'costPrice') {
                     continue;
                 }
                 updateOps[field] = newVal;
@@ -354,7 +354,8 @@ class ScraperService {
                 return;
             const externalId = idMatch[1];
             // Name is everything before the price marker (or full text if no price marker)
-            const name = fullText.replace(/U\$D[\s\d.,+IVA%]+$/, '').trim();
+            // Handle formats like: "Name U$D 25,61+ IVA 21%$ 37.134,50+ IVA 21%"
+            const name = fullText.replace(/U\$D\s*[\d.,]+(\s*\+\s*IVA\s*[\d.]+%)*(\$\s*[\d.,.]+(\s*\+\s*IVA\s*[\d.]+%)*)*$/, '').trim();
             if (!name || name.length < 3)
                 return;
             // Extract image from listing page (CSS background-image)
@@ -489,7 +490,13 @@ class ScraperService {
                     // Save products to DB
                     // NOTE: Only Playwright-enriched products have real price/stock data.
                     // Listing-only products only have name + listing images.
+                    // For incremental scraper: skip products that already exist (they were already saved)
+                    const isIncremental = this.request.source === 'incremental';
                     for (const product of products) {
+                        // Skip existing products in incremental mode - they were already saved
+                        if (isIncremental && existingIds.has(product.externalId)) {
+                            continue;
+                        }
                         try {
                             const upsertPayload = {
                                 externalId: product.externalId,
@@ -497,10 +504,9 @@ class ScraperService {
                                 categories: [cat.id],
                             };
                             // Only include fields that have real data (not listing defaults)
-                            // With conIva=1, priceRaw already contains the final price (USD + IVA)
+                            // price from supplier → stored as costPrice. Backend computes sale price.
                             if (product.priceRaw) {
-                                upsertPayload.price = this.parsePrice(product.priceRaw);
-                                upsertPayload.priceRaw = product.priceRaw;
+                                upsertPayload.costPrice = this.parsePrice(product.priceRaw);
                                 upsertPayload.currency = 'USD';
                             }
                             if (product.stock > 0) {
@@ -519,7 +525,7 @@ class ScraperService {
                                 upsertPayload.imageUrls = images;
                             }
                             console.log(`[Upsert] ${product.externalId}: ` +
-                                `price=${upsertPayload.price ?? 'N/A'}, ` +
+                                `costPrice=${upsertPayload.costPrice ?? 'N/A'}, ` +
                                 `images=${upsertPayload.imageUrls?.length ?? 0}`);
                             const result = await productRepository.atomicUpsertByExternalId(upsertPayload);
                             if (result.created) {

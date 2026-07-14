@@ -177,7 +177,7 @@ const productRepository = {
     const fieldsToCompare = [
       'name',
       'description',
-      'price',
+      'costPrice',
       'currency',
       'stock',
       'sku',
@@ -200,7 +200,8 @@ const productRepository = {
         // Skip if: new value is empty (and existing is also empty or has data)
         // This prevents overwriting null/undefined with null/undefined (no-op)
         // And prevents overwriting valid data with empty defaults
-        if (isEmpty(newVal)) {
+        // Exception: costPrice=0 is a valid supplier value, not an empty default
+        if (isEmpty(newVal) && field !== 'costPrice') {
           continue;
         }
         updateOps[field] = newVal;
@@ -558,10 +559,9 @@ const name = fullText.replace(/U\$D\s*[\d.,]+(\s*\+\s*IVA\s*[\d.]+%)*(\$\s*[\d.,
               };
 
               // Only include fields that have real data (not listing defaults)
-              // With conIva=1, priceRaw already contains the final price (USD + IVA)
-              // Do NOT include costPrice or profitMargin - we only want price
+              // price from supplier → stored as costPrice. Backend computes sale price.
               if (product.priceRaw) {
-                upsertPayload.price = this.parsePrice(product.priceRaw);
+                upsertPayload.costPrice = this.parsePrice(product.priceRaw);
                 upsertPayload.currency = 'USD';
               }
               if (product.stock > 0) {
@@ -582,7 +582,7 @@ const name = fullText.replace(/U\$D\s*[\d.,]+(\s*\+\s*IVA\s*[\d.]+%)*(\$\s*[\d.,
 
               console.log(
                 `[Upsert] ${product.externalId}: ` +
-                `price=${upsertPayload.price ?? 'N/A'}, ` +
+                `costPrice=${upsertPayload.costPrice ?? 'N/A'}, ` +
                 `images=${upsertPayload.imageUrls?.length ?? 0}`,
               );
 

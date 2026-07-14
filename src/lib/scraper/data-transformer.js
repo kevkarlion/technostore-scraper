@@ -91,18 +91,13 @@ function transformProduct(raw, supplier) {
         supplier,
         name: raw.name.trim(),
         description: raw.description?.trim(),
-        price,
-        priceRaw: raw.priceRaw,
+        costPrice: price,
         currency: "USD",
         stock,
         sku: raw.sku,
         imageUrls: raw.imageUrls,
         categories: raw.categories,
-        attributes: [],
-        rawData: raw.rawElement ? { rawElement: "Available" } : undefined,
-        inStock: true,
     };
-    console.log(`[Transform] Output priceRaw: ${scrapedProduct.priceRaw}`);
     return scrapedProduct;
 }
 /**

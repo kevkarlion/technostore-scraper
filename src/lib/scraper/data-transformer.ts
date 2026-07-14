@@ -85,7 +85,7 @@ export interface ScrapedProductDTO {
   supplier: string;
   name: string;
   description?: string;
-  price: number;
+  costPrice: number;
   currency: string;
   stock: number;
   sku?: string;
@@ -119,7 +119,7 @@ export function transformProduct(raw: RawProduct, supplier: string): ScrapedProd
     supplier,
     name: raw.name.trim(),
     description: raw.description?.trim(),
-    price,
+    costPrice: price,
     currency: "USD",
     stock,
     sku: raw.sku,

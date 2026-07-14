@@ -371,7 +371,7 @@ class ScraperPlaywrightListingService {
                     return;
                 const externalId = idMatch[1];
                 // Name is everything before the price (or full text if no price)
-                const name = fullText.replace(/U\$D[\s\d.,+IVA%]+$/, '').trim();
+                const name = fullText.replace(/U\$D\s*[\d.,]+(\s*\+\s*IVA\s*[\d.]+%)*(\$\s*[\d.,.]+(\s*\+\s*IVA\s*[\d.]+%)*)*$/, '').trim();
                 if (!name || name.length < 3)
                     return;
                 // Image from listing
@@ -438,8 +438,7 @@ class ScraperPlaywrightListingService {
         const fieldsToCompare = [
             'name',
             'description',
-            'price',
-            'priceRaw',
+            'costPrice',
             'currency',
             'stock',
             'sku',
@@ -451,7 +450,8 @@ class ScraperPlaywrightListingService {
             const newVal = product[field];
             if (JSON.stringify(existingVal) !== JSON.stringify(newVal)) {
                 // Don't overwrite valid existing data with empty/zero defaults
-                if (isEmpty(newVal) && !isEmpty(existingVal)) {
+                // Exception: costPrice=0 is a valid supplier value, not an empty default
+                if (isEmpty(newVal) && !isEmpty(existingVal) && field !== 'costPrice') {
                     continue;
                 }
                 updateOps[field] = newVal;
@@ -562,26 +562,41 @@ class ScraperPlaywrightListingService {
                                 const enriched = await enricher.enrichProduct(product.externalId);
                                 enriched.name = product.name;
                                 enriched.categories = [cat.id];
-                                // Parse price from enriched data
-                                let price = enriched.price;
-                                if (price === 0 && enriched.priceRaw) {
-                                    let cleaned = enriched.priceRaw.replace(/\./g, '').replace(',', '.');
+                                // ALWAYS derive price from priceRaw to ensure consistency
+                                let price = 0;
+                                if (enriched.priceRaw) {
+                                    let cleaned = enriched.priceRaw.replace(/[$€£¥₹]/g, '').replace(/\s/g, '').trim();
+                                    const lastDot = cleaned.lastIndexOf('.');
+                                    const lastComma = cleaned.lastIndexOf(',');
+                                    if (lastComma > lastDot) {
+                                        // European: 1.234,56 → 1234.56
+                                        cleaned = cleaned.replace(/\./g, '').replace(',', '.');
+                                    }
+                                    else {
+                                        // US: 1,234.56 → remove commas
+                                        cleaned = cleaned.replace(/,/g, '');
+                                    }
                                     price = parseFloat(cleaned) || 0;
+                                }
+                                // Fallback: if detail page didn't yield a price, use the listing price
+                                if (!price) {
+                                    const listingPrice = listingPrices.get(product.externalId);
+                                    if (listingPrice) {
+                                        price = listingPrice.price;
+                                    }
                                 }
                                 // Upsert to DB
                                 const upsertResult = await this.upsertProduct({
                                     externalId: enriched.externalId,
                                     name: enriched.name,
                                     description: enriched.description,
-                                    price,
-                                    priceRaw: enriched.priceRaw,
+                                    costPrice: price,
                                     currency: 'USD',
                                     stock: enriched.stock,
                                     sku: enriched.sku,
                                     imageUrls: enriched.imageUrls,
                                     categories: enriched.categories,
                                     attributes: [],
-                                    inStock: enriched.stock > 0 || true,
                                 });
                                 return upsertResult;
                             }));
