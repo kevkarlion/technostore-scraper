@@ -86,16 +86,12 @@ export interface ScrapedProductDTO {
   name: string;
   description?: string;
   price: number;
-  priceRaw?: string;
   currency: string;
   stock: number;
   sku?: string;
   imageUrls: string[];
-  cloudinaryUrls?: string[];
   categories: string[];
-  attributes: unknown[];
-  rawData?: unknown;
-  inStock: boolean;
+  attributes?: Array<{ key: string; value: string }>;
 }
 
 /**
@@ -124,18 +120,12 @@ export function transformProduct(raw: RawProduct, supplier: string): ScrapedProd
     name: raw.name.trim(),
     description: raw.description?.trim(),
     price,
-    priceRaw: raw.priceRaw,
     currency: "USD",
     stock,
     sku: raw.sku,
     imageUrls: raw.imageUrls,
     categories: raw.categories,
-    attributes: [],
-    rawData: raw.rawElement ? { rawElement: "Available" } : undefined,
-    inStock: true,
   };
-
-  console.log(`[Transform] Output priceRaw: ${scrapedProduct.priceRaw}`);
 
   return scrapedProduct;
 }

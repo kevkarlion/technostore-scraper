@@ -178,7 +178,6 @@ const productRepository = {
       'name',
       'description',
       'price',
-      'priceRaw',
       'currency',
       'stock',
       'sku',
@@ -563,7 +562,6 @@ const name = fullText.replace(/U\$D\s*[\d.,]+(\s*\+\s*IVA\s*[\d.]+%)*(\$\s*[\d.,
               // Do NOT include costPrice or profitMargin - we only want price
               if (product.priceRaw) {
                 upsertPayload.price = this.parsePrice(product.priceRaw);
-                upsertPayload.priceRaw = product.priceRaw;
                 upsertPayload.currency = 'USD';
               }
               if (product.stock > 0) {

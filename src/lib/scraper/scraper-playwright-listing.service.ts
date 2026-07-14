@@ -497,7 +497,6 @@ export class ScraperPlaywrightListingService {
       'name',
       'description',
       'price',
-      'priceRaw',
       'currency',
       'stock',
       'sku',
@@ -663,14 +662,12 @@ export class ScraperPlaywrightListingService {
                     name: enriched.name,
                     description: enriched.description,
                     price,
-                    priceRaw: enriched.priceRaw,
                     currency: 'USD',
                     stock: enriched.stock,
                     sku: enriched.sku,
                     imageUrls: enriched.imageUrls,
                     categories: enriched.categories,
                     attributes: [],
-                    inStock: enriched.stock > 0 || true,
                   });
 
                   return upsertResult;
