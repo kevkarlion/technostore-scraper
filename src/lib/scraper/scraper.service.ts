@@ -116,8 +116,13 @@ const productRepository = {
       }
       return { created: false, updated: false };
     } else {
+      const slug = generateProductSlug(product.name);
+      const searchName = normalizeText(product.name);
+
       await collection.insertOne({
         ...product,
+        slug,
+        searchName,
         supplier: 'jotakp',
         status: 'active',
         inStock: true,
