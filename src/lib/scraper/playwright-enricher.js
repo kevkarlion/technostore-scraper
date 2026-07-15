@@ -243,6 +243,56 @@ class PlaywrightEnricher {
         }
     }
     /**
+     * Extract prices from a rendered listing page.
+     *
+     * The supplier site renders prices via JavaScript, so HTTP-only scraping
+     * can't see them. This method navigates to the listing page with Playwright,
+     * waits for rendering, and extracts the U$D price from each product link.
+     *
+     * This is the SAME logic used by playwright-listing — reliable because the
+     * price is directly in the link text ("U$D 76,21"), no fragile selectors.
+     */
+    async extractListingPrices(idsubrubro1, pageNum) {
+        if (!this.context)
+            throw new Error('Browser not launched');
+        const url = this.baseUrl;
+        if (!url)
+            throw new Error('baseUrl required — call initSession first');
+        const prices = new Map();
+        const page = await this.context.newPage();
+        try {
+            await page.goto(`${url}/buscar.aspx?idsubrubro1=${idsubrubro1}&pag=${pageNum}&conIva=1`, {
+                waitUntil: 'networkidle',
+                timeout: 20000,
+            });
+            await page.waitForSelector('a[href*="articulo.aspx?id="]', { timeout: 10000 }).catch(() => { });
+            const extracted = await page.evaluate(() => {
+                const results = [];
+                const links = document.querySelectorAll('a[href*="articulo.aspx?id="]');
+                links.forEach((link) => {
+                    const href = link.getAttribute('href') || '';
+                    const idMatch = href.match(/id=(\d+)/);
+                    if (!idMatch)
+                        return;
+                    const text = link.textContent?.trim() || '';
+                    const priceMatch = text.match(/U\$D\s+([\d.,]+)/);
+                    if (priceMatch) {
+                        results.push({ externalId: idMatch[1], priceRaw: priceMatch[1] });
+                    }
+                });
+                return results;
+            });
+            for (const item of extracted) {
+                prices.set(item.externalId, item.priceRaw);
+            }
+            console.log(`[Playwright] Listing prices extracted: page ${pageNum}, ${prices.size} prices`);
+        }
+        finally {
+            await page.close();
+        }
+        return prices;
+    }
+    /**
      * Close the browser and clean up resources.
      */
     async close() {

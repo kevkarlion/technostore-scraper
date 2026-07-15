@@ -398,8 +398,8 @@ class ScraperService {
         const allIds = [];
         const maxPages = 20;
         for (let pageNum = 1; pageNum <= maxPages; pageNum++) {
-            console.log(`[Scraper] Scraping page ${pageNum} (idsubrubro1=${idsubrubro1})`);
             const { products, hasMore } = await this.scrapeCategoryPage(idsubrubro1, pageNum);
+            console.log(`[Scraper] Page ${pageNum}: ${products.length} products extracted${hasMore ? ' (more pages)' : ' (last page)'}`);
             if (products.length === 0)
                 break;
             // Collect products — detail enrichment (prices, desc, images) happens via Playwright later
@@ -465,15 +465,40 @@ class ScraperService {
                     const productsToEnrich = products.filter(p => !existingIds.has(p.externalId));
                     const skippedCount = products.length - productsToEnrich.length;
                     let enrichedCount = 0;
+                    // Step 1: Extract prices from listing pages via Playwright (reliable)
+                    // This is the SAME logic as playwright-listing — prices come from the
+                    // rendered listing text ("U$D 76,21"), not from fragile detail page selectors.
+                    const listingPrices = new Map();
+                    if (playwrightEnricher && productsToEnrich.length > 0) {
+                        try {
+                            const maxPages = 20;
+                            for (let pageNum = 1; pageNum <= maxPages; pageNum++) {
+                                const pagePrices = await playwrightEnricher.extractListingPrices(cat.idsubrubro1, pageNum);
+                                if (pagePrices.size === 0)
+                                    break;
+                                for (const [id, price] of pagePrices) {
+                                    listingPrices.set(id, price);
+                                }
+                            }
+                            console.log(`[Playwright] ${cat.id}: ${listingPrices.size} listing prices extracted`);
+                        }
+                        catch (e) {
+                            console.error(`[Playwright] ${cat.id}: failed to extract listing prices:`, e.message);
+                        }
+                    }
+                    // Step 2: Enrich new products — detail page for desc/SKU/stock/images,
+                    // listing price for costPrice (reliable source)
                     if (playwrightEnricher && productsToEnrich.length > 0) {
                         for (let i = 0; i < productsToEnrich.length; i += ENRICHMENT_CONCURRENCY) {
                             const batch = productsToEnrich.slice(i, i + ENRICHMENT_CONCURRENCY);
                             const results = await Promise.allSettled(batch.map(async (product) => {
                                 const enriched = await playwrightEnricher.enrichProduct(product.externalId, this.config.baseUrl);
-                                if (enriched.priceRaw)
-                                    product.priceRaw = enriched.priceRaw;
-                                if (enriched.priceWithIvaRaw)
-                                    product.priceWithIvaRaw = enriched.priceWithIvaRaw;
+                                // Price from listing page (reliable) — NOT from detail page
+                                const listingPrice = listingPrices.get(product.externalId);
+                                if (listingPrice) {
+                                    product.priceRaw = listingPrice;
+                                }
+                                // Other fields from detail page
                                 if (enriched.description)
                                     product.description = enriched.description;
                                 if (enriched.sku)
@@ -577,6 +602,15 @@ class ScraperService {
                         if (discontinued > 0) {
                             console.log(`[Scraper] Marked ${discontinued} products as discontinued in ${cat.id}`);
                         }
+                    }
+                    // Update scraper_state.productIds so incremental skips these products next time
+                    // This runs for ALL scraper sources (incremental, full, test-category, etc.)
+                    try {
+                        const db = await getDb();
+                        await db.collection('scraper_state').updateOne({ categoryId: cat.id }, { $set: { productIds: externalIds, lastScrapeAt: new Date() } }, { upsert: true });
+                    }
+                    catch (e) {
+                        console.error(`[Scraper] ${cat.id}: failed to update scraper_state:`, e.message);
                     }
                     // Collect all external IDs found for this category (used by incremental scraper to update state)
                     categoryExternalIds[cat.id] = externalIds;

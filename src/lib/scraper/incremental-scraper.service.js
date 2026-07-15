@@ -284,9 +284,8 @@ async function runIncrementalScraper(forceFullScrape = false, categoryId, skipEx
                 // Pass existing product IDs so Playwright only enriches NEW products
                 const existingProductIds = existingProductIdsByCategory.get(categoryId) || [];
                 const result = await (0, scraper_service_1.runScraper)({ categoryId, source: 'incremental', skipLogin: true, existingProductIds }, sharedHttp);
-                // Update state: timestamp + ALL product IDs found in this scrape
-                const allExternalIds = result.categoryExternalIds?.[categoryId] || [];
-                await db.collection('scraper_state').updateOne({ categoryId }, { $set: { lastScrapeAt: new Date(), productIds: allExternalIds } });
+                // scraper_state.productIds is now updated by scraper.service.ts itself
+                // (runs for ALL sources, not just incremental)
                 return result;
             }
             catch (e) {
