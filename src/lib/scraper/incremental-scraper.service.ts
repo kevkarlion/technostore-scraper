@@ -304,12 +304,8 @@ export async function runIncrementalScraper(forceFullScrape: boolean = false, ca
             sharedHttp,
           );
 
-          // Update state: timestamp + ALL product IDs found in this scrape
-          const allExternalIds = result.categoryExternalIds?.[categoryId] || [];
-          await db.collection('scraper_state').updateOne(
-            { categoryId },
-            { $set: { lastScrapeAt: new Date(), productIds: allExternalIds } },
-          );
+          // scraper_state.productIds is now updated by scraper.service.ts itself
+          // (runs for ALL sources, not just incremental)
 
           return result;
         } catch (e: any) {
