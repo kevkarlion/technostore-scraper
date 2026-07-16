@@ -121,6 +121,8 @@ const productRepository = {
 
       await collection.insertOne({
         ...product,
+        price: product.costPrice || 0,
+        profitMargin: 0,
         slug,
         searchName,
         supplier: 'jotakp',
@@ -152,6 +154,8 @@ const productRepository = {
       
       await collection.insertOne({
         ...product,
+        price: product.costPrice || 0,
+        profitMargin: 0,
         slug,
         searchName,
         supplier: product.supplier || 'jotakp',

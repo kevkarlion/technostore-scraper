@@ -233,19 +233,44 @@ async function runPostExecutionHooks(executionId: string | null): Promise<void> 
 // ===============================================
 // SCRAPER MUTEX — evita solapamiento entre runs
 // ===============================================
+
+/**
+ * Maximum time (ms) the lock can be held before auto-releasing.
+ * Protects against stuck locks after OOM kills, crashes, or unhandled exceptions.
+ * Set to 30 minutes — a full scrape should never exceed this.
+ */
+const SCRAPER_LOCK_TTL_MS = 30 * 60 * 1000;
+
 let scraperRunning = false;
+let scraperLockAcquiredAt: number | null = null;
 
 /**
  * Marca el scraper como "en ejecución" y devuelve handle para liberar.
- * Si ya está corriendo, lanza 409.
+ * Si ya está corriendo pero el lock lleva más de TTL, lo libera automáticamente
+ * (protege contra crashes que no ejecutaron el finally).
+ * Si el lock es reciente, lanza 409.
  */
 function tryAcquireScraper(): (() => void) {
-  if (scraperRunning) {
-    throw Object.assign(new Error('Scraper is already running'), { statusCode: 409 });
+  if (scraperRunning && scraperLockAcquiredAt) {
+    const elapsed = Date.now() - scraperLockAcquiredAt;
+    if (elapsed > SCRAPER_LOCK_TTL_MS) {
+      console.warn(
+        `[Mutex] Lock stale (${(elapsed / 60000).toFixed(1)}min old) — auto-releasing`
+      );
+      scraperRunning = false;
+      scraperLockAcquiredAt = null;
+    } else {
+      throw Object.assign(new Error('Scraper is already running'), { statusCode: 409 });
+    }
   }
   scraperRunning = true;
+  scraperLockAcquiredAt = Date.now();
   console.log('[Mutex] Lock acquired');
-  return () => { scraperRunning = false; console.log('[Mutex] Lock released'); };
+  return () => {
+    scraperRunning = false;
+    scraperLockAcquiredAt = null;
+    console.log('[Mutex] Lock released');
+  };
 }
 
 const app = express();

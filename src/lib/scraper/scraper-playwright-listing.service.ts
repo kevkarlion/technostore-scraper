@@ -493,6 +493,8 @@ export class ScraperPlaywrightListingService {
 
       await collection.insertOne({
         ...product,
+        price: product.costPrice || 0,
+        profitMargin: 0,
         slug,
         searchName,
         supplier: product.supplier || 'jotakp',
