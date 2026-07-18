@@ -556,3 +556,15 @@ app.post('/debug/check-products', async (req, res) => {
 app.listen(PORT, () => { 
   console.log('[Server] Scraper server on port', PORT);
 });
+
+// Debug: check chromium processes
+app.get('/debug/processes', async (_req, res) => {
+  const { exec } = require('child_process');
+  exec('ps aux | grep -E "chromium|playwright" | grep -v grep', (err, stdout, stderr) => {
+    if (err) {
+      res.send(`<pre>Error: ${err.message}</pre>`);
+      return;
+    }
+    res.send(`<pre>${stdout || 'No processes found'}</pre>`);
+  });
+});
