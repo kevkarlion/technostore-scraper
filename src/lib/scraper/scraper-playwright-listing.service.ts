@@ -491,6 +491,7 @@ export class ScraperPlaywrightListingService {
       const slug = generateProductSlug(product.name);
       const searchName = normalizeText(product.name);
 
+      console.log(`[INSERT] ${product.externalId}: costPrice=${product.costPrice}, price field will be=${product.costPrice || 0}`);
       await collection.insertOne({
         ...product,
         price: product.costPrice || 0,
@@ -612,36 +613,11 @@ export class ScraperPlaywrightListingService {
           const { products: listingProducts, externalIds } = await this.scrapeCategoryIds(cat.idsubrubro1);
           console.log(`[Scraper] Category ${cat.id}: ${listingProducts.length} products found`);
 
-          // Step 2: Playwright listing → extract prices for ALL products
-          const listingPrices = new Map<string, ListingPrice>();
-          if (enricher && listingProducts.length > 0) {
-            console.log(`[Scraper] Extracting prices from listing via Playwright...`);
-
-            // Get all pages for this category
-            const maxPages = 20;
-            for (let pageNum = 1; pageNum <= maxPages; pageNum++) {
-              try {
-                const prices = await enricher.extractPricesFromListing(cat.idsubrubro1, pageNum);
-                if (prices.length === 0) break;
-
-                for (const p of prices) {
-                  listingPrices.set(p.externalId, p);
-                }
-
-                console.log(`[Scraper] Page ${pageNum}: ${prices.length} prices extracted`);
-              } catch (e: any) {
-                console.error(`[Scraper] Error extracting prices from page ${pageNum}:`, e.message);
-              }
-            }
-
-            console.log(`[Scraper] Total prices extracted: ${listingPrices.size}`);
-          }
-
-          // Step 3: Compare prices with DB and identify what needs enrichment
+          // Step 2: Compare prices with DB and identify what needs enrichment
           const db = await getDb();
           const productsCollection = db.collection('products');
 
-          const productsToEnrich: Array<{ product: ListingProduct; reason: 'new' | 'price_changed' }> = [];
+          const productsToEnrich: Array<{ product: ListingProduct; reason: 'new' }> = [];
 
           for (const product of listingProducts) {
             const existing = await productsCollection.findOne({
@@ -652,21 +628,11 @@ export class ScraperPlaywrightListingService {
             if (!existing) {
               // New product → needs full enrichment
               productsToEnrich.push({ product, reason: 'new' });
-            } else {
-              // Existing product → check if price changed
-              const listingPrice = listingPrices.get(product.externalId);
-              if (listingPrice) {
-                const existingPrice = existing.costPrice || existing.price || 0;
-                // Compare prices (allow small floating point differences)
-                if (Math.abs(listingPrice.price - existingPrice) > 0.01) {
-                  console.log(`[Scraper] Price changed for ${product.externalId}: ${existingPrice} → ${listingPrice.price}`);
-                  productsToEnrich.push({ product, reason: 'price_changed' });
-                }
-              }
             }
+            // Existing products are SKIPPED - incremental never updates
           }
 
-          console.log(`[Scraper] ${productsToEnrich.length} products need enrichment (${productsToEnrich.filter(p => p.reason === 'new').length} new, ${productsToEnrich.filter(p => p.reason === 'price_changed').length} price changed)`);
+          console.log(`[Scraper] ${productsToEnrich.length} products need enrichment (new only, existing skipped)`);
 
           // Step 4: Playwright detail → enrich products that need it
           const ENRICHMENT_CONCURRENCY = 3;
@@ -681,7 +647,8 @@ export class ScraperPlaywrightListingService {
                   enriched.name = product.name;
                   enriched.categories = [cat.id];
 
-                  // ALWAYS derive price from priceRaw to ensure consistency
+                  // ALWAYS derive price from priceRaw from DETAIL PAGE (enricher)
+                  // NO fallback to listing - for new products we want data from detail page
                   let price = 0;
                   if (enriched.priceRaw) {
                     let cleaned = enriched.priceRaw.replace(/[$€£¥₹]/g, '').replace(/\s/g, '').trim();
@@ -697,15 +664,13 @@ export class ScraperPlaywrightListingService {
                     price = parseFloat(cleaned) || 0;
                   }
 
-                  // Fallback: if detail page didn't yield a price, use the listing price
-                  if (!price) {
-                    const listingPrice = listingPrices.get(product.externalId);
-                    if (listingPrice) {
-                      price = listingPrice.price;
-                    }
+                  if (price === 0) {
+                    console.log(`[WARNING] ${enriched.externalId}: No price from detail page, skipping product`);
+                    return { created: false, updated: false, changes: [] };
                   }
 
                   // Upsert to DB
+                  console.log(`[Upsert] ${enriched.externalId}: costPrice=${price}, name=${enriched.name?.slice(0, 30)}`);
                   const upsertResult = await this.upsertProduct({
                     externalId: enriched.externalId,
                     name: enriched.name,
