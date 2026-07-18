@@ -580,3 +580,42 @@ app.get('/debug/processes', async (_req, res) => {
     res.status(500).json({ error: String(error) });
   }
 });
+
+// Debug: find and delete products without costPrice
+app.post('/debug/fix-missing-costprice', async (_req, res) => {
+  try {
+    const db = await getDb();
+    const products = db.collection('products');
+    
+    // Find products without costPrice field
+    const missing = await products.find({
+      $or: [
+        { costPrice: { $exists: false } },
+        { costPrice: null }
+      ]
+    }).project({ externalId: 1, name: 1, price: 1, createdAt: 1 }).limit(20).toArray();
+    
+    const count = await products.countDocuments({
+      $or: [
+        { costPrice: { $exists: false } },
+        { costPrice: null }
+      ]
+    });
+    
+    // Delete them
+    const deleteResult = await products.deleteMany({
+      $or: [
+        { costPrice: { $exists: false } },
+        { costPrice: null }
+      ]
+    });
+    
+    res.json({ 
+      found: count, 
+      sample: missing,
+      deleted: deleteResult.deletedCount 
+    });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
