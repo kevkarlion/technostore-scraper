@@ -559,12 +559,24 @@ app.listen(PORT, () => {
 
 // Debug: check chromium processes
 app.get('/debug/processes', async (_req, res) => {
-  const { exec } = require('child_process');
-  exec('ps aux | grep -E "chromium|playwright" | grep -v grep', (err, stdout, stderr) => {
-    if (err) {
-      res.send(`<pre>Error: ${err.message}</pre>`);
-      return;
+  const fs = require('fs');
+  const path = require('path');
+  
+  try {
+    const procs = fs.readdirSync('/proc').filter(p => /^\d+$/.test(p));
+    const chromium: string[] = [];
+    
+    for (const pid of procs.slice(0, 200)) { // limit check
+      try {
+        const cmdline = fs.readFileSync(path.join('/proc', pid, 'cmdline'), 'utf8');
+        if (cmdline.includes('chromium') || cmdline.includes('playwright') || cmdline.includes('chrome')) {
+          chromium.push(`PID ${pid}: ${cmdline.replace(/\0/g, ' ').slice(0, 100)}`);
+        }
+      } catch (e) {}
     }
-    res.send(`<pre>${stdout || 'No processes found'}</pre>`);
-  });
+    
+    res.json({ count: chromium.length, processes: chromium });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
 });
