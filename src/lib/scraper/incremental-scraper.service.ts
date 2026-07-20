@@ -226,6 +226,13 @@ export async function runIncrementalScraper(forceFullScrape: boolean = false, ca
   await bootScraper.login();
   console.log('[Incremental] Shared session established for all categories');
 
+  // Global timeout: abort if entire run takes > 30 minutes
+  const GLOBAL_TIMEOUT_MS = 30 * 60 * 1000;
+  const globalTimeout = setTimeout(() => {
+    console.error('[Incremental] GLOBAL TIMEOUT: scraper exceeded 30 minutes, aborting');
+    process.exit(1);
+  }, GLOBAL_TIMEOUT_MS);
+
   // Step 1: Pre-check
   let preCheckResult: { changed: string[]; unchanged: string[]; errors: string[] };
   if (forceFullScrape) {
@@ -290,6 +297,8 @@ export async function runIncrementalScraper(forceFullScrape: boolean = false, ca
   scrapeResults.discontinued = totalDiscontinued;
 
   // Step 2b: Scrape only CHANGED + ERROR categories, sharing the authenticated session
+  const CATEGORY_TIMEOUT_MS = 3 * 60 * 1000; // 3 minutes per category
+
   for (let i = 0; i < toScrape.length; i += MAX_PARALLEL) {
     const batch = toScrape.slice(i, i + MAX_PARALLEL);
     console.log(`[Incremental] Scraping batch ${Math.floor(i / MAX_PARALLEL) + 1}: ${batch.join(', ')}`);
@@ -299,10 +308,15 @@ export async function runIncrementalScraper(forceFullScrape: boolean = false, ca
         try {
           // Pass existing product IDs so Playwright only enriches NEW products
           const existingProductIds = existingProductIdsByCategory.get(categoryId) || [];
-          const result = await runScraper(
+          const scraperPromise = runScraper(
             { categoryId, source: 'incremental', skipLogin: true, existingProductIds },
             sharedHttp,
           );
+          const timeoutPromise = new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error(`Category ${categoryId} timed out after 3 minutes`)), CATEGORY_TIMEOUT_MS)
+          );
+
+          const result = await Promise.race([scraperPromise, timeoutPromise]);
 
           // scraper_state.productIds is now updated by scraper.service.ts itself
           // (runs for ALL sources, not just incremental)
@@ -327,6 +341,7 @@ export async function runIncrementalScraper(forceFullScrape: boolean = false, ca
   }
 
   scrapeResults.durationMs = Date.now() - startTime;
+  clearTimeout(globalTimeout);
   console.log(
     `[Incremental] Done in ${(scrapeResults.durationMs / 1000).toFixed(1)}s: ` +
     `${scrapeResults.created} created, ${scrapeResults.updated} updated, ` +
