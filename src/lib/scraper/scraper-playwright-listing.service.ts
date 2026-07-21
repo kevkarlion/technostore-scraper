@@ -110,7 +110,16 @@ class PlaywrightListingEnricher {
   private baseUrl: string = '';
 
   async launch(): Promise<void> {
-    this.browser = await chromium.launch({ headless: true });
+    this.browser = await chromium.launch({
+      headless: true,
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--disable-software-rasterizer',
+      ],
+    });
     this.context = await this.browser.newContext();
   }
 
