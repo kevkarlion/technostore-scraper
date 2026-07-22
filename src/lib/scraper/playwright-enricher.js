@@ -30,7 +30,16 @@ class PlaywrightEnricher {
      * Launch the browser. Call once before any other method.
      */
     async launch() {
-        this.browser = await playwright_1.chromium.launch({ headless: true });
+        this.browser = await playwright_1.chromium.launch({
+            headless: true,
+            args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-gpu',
+                '--disable-software-rasterizer',
+            ],
+        });
         this.context = await this.browser.newContext();
     }
     /**
