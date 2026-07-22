@@ -321,10 +321,124 @@ export async function runIncrementalScraper(forceFullScrape: boolean = false, ca
           // scraper_state.productIds is now updated by scraper.service.ts itself
           // (runs for ALL sources, not just incremental)
 
+<<<<<<< HEAD
           return result;
         } catch (e: any) {
           console.error(`[Incremental] Error scraping ${categoryId}:`, e.message);
           return { created: 0, updated: 0, createdIds: [], updatedIds: [], errors: [`Error scraping ${categoryId}: ${e.message}`], success: false };
+=======
+      for (const p of newOnes) {
+        newProducts.push({
+          externalId: p.externalId,
+          name: p.name,
+          imageUrls: p.imageUrls,
+          categoryId: catId,
+          idsubrubro1: cat.idsubrubro1,
+        });
+      }
+
+      console.log(
+        `[Phase 1] ${catId}: ${products.length} products found, ` +
+        `${newOnes.length} new, ${existingIds.size} existing`
+      );
+    } catch (e: any) {
+      console.error(`[Phase 1] ${catId}: ERROR — ${e.message}`);
+      scrapeErrors.push(`Error scanning ${catId}: ${e.message}`);
+    }
+  }
+
+  console.log(
+    `[Phase 1] Complete: ${newProducts.length} new products across ${toScrape.length} categories` +
+    (newProducts.length > 0 ? ' → Playwright needed' : ' → DONE (no browser)')
+  );
+
+  // ============================================================================
+  // PHASE 2: Playwright enrichment — only if new products exist
+  // ============================================================================
+  const scrapeResults = {
+    created: 0, updated: 0,
+    createdIds: [] as string[], updatedIds: [] as string[],
+    errors: scrapeErrors, durationMs: 0, discontinued: totalDiscontinued,
+  };
+
+  if (newProducts.length > 0) {
+    console.log(`\n[Phase 2] Playwright enrichment for ${newProducts.length} new products...`);
+
+    let enricher: PlaywrightEnricher | null = null;
+    try {
+      enricher = new PlaywrightEnricher();
+      await enricher.launch();
+      await enricher.initSession(config.baseUrl, {
+        email: config.email,
+        password: config.password,
+      });
+      console.log('[Phase 2] Playwright launched and session initialized');
+
+      const ENRICHMENT_CONCURRENCY = 2;
+
+      for (let i = 0; i < newProducts.length; i += ENRICHMENT_CONCURRENCY) {
+        const batch = newProducts.slice(i, i + ENRICHMENT_CONCURRENCY);
+        const results = await Promise.allSettled(
+          batch.map(async (product) => {
+            const enriched = await enricher!.enrichProduct(product.externalId, config.baseUrl);
+
+            const upsertPayload: any = {
+              externalId: product.externalId,
+              name: product.name,
+              categories: [product.categoryId],
+            };
+
+            // Price from detail page
+            if (enriched.priceRaw) {
+              let cleaned = enriched.priceRaw.replace(/[$€£¥₹]/g, '').replace(/\s/g, '').trim();
+              const lastDot = cleaned.lastIndexOf('.');
+              const lastComma = cleaned.lastIndexOf(',');
+              if (lastComma > lastDot) {
+                cleaned = cleaned.replace(/\./g, '').replace(',', '.');
+              } else {
+                cleaned = cleaned.replace(/,/g, '');
+              }
+              const price = parseFloat(cleaned);
+              if (!isNaN(price) && price > 0) {
+                upsertPayload.costPrice = price;
+                upsertPayload.currency = 'USD';
+              }
+            }
+
+            if (enriched.description) upsertPayload.description = enriched.description;
+            if (enriched.sku) upsertPayload.sku = enriched.sku;
+            if (enriched.stock !== undefined) upsertPayload.stock = enriched.stock;
+
+            // Images: prefer detail page, fall back to listing
+            const images = enriched.imageUrls?.length > 0 ? enriched.imageUrls : product.imageUrls;
+            if (images?.length > 0) upsertPayload.imageUrls = images;
+
+            const result = await productRepository.atomicUpsertByExternalId(upsertPayload);
+
+            if (result.created) {
+              return { ...result, externalId: product.externalId, action: 'created' as const };
+            } else if (result.updated) {
+              return { ...result, externalId: product.externalId, action: 'updated' as const };
+            }
+            return { ...result, externalId: product.externalId, action: 'unchanged' as const };
+          })
+        );
+
+        for (const r of results) {
+          if (r.status === 'fulfilled') {
+            if (r.value.action === 'created') {
+              scrapeResults.created++;
+              scrapeResults.createdIds.push(r.value.externalId);
+            } else if (r.value.action === 'updated') {
+              scrapeResults.updated++;
+              scrapeResults.updatedIds.push(r.value.externalId);
+            }
+          } else {
+            const msg = (r as PromiseRejectedResult).reason?.message || String(r);
+            console.error(`[Phase 2] Enrichment failed: ${msg}`);
+            scrapeResults.errors.push(msg);
+          }
+>>>>>>> feat/axios-first-incremental
         }
       }),
     );
