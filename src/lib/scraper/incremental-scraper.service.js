@@ -326,13 +326,6 @@ async function runIncrementalScraper(forceFullScrape = false, categoryId, skipEx
     };
     if (newProducts.length > 0) {
         console.log(`\n[Phase 2] Playwright enrichment for ${newProducts.length} new products...`);
-        // Group new products by category for listing price extraction
-        const productsByCategory = new Map();
-        for (const p of newProducts) {
-            const existing = productsByCategory.get(p.categoryId) || [];
-            existing.push(p);
-            productsByCategory.set(p.categoryId, existing);
-        }
         let enricher = null;
         try {
             enricher = new playwright_enricher_1.PlaywrightEnricher();
@@ -343,99 +336,72 @@ async function runIncrementalScraper(forceFullScrape = false, categoryId, skipEx
             });
             console.log('[Phase 2] Playwright launched and session initialized');
             const ENRICHMENT_CONCURRENCY = 2;
-            for (const [catId, catProducts] of productsByCategory) {
-                const cat = config_1.jotakpCategories.find((c) => c.id === catId);
-                if (!cat)
-                    continue;
-                // Step 1: Extract listing prices via Playwright (with conIva=1)
-                // Prices are JS-rendered — only available through Playwright
-                const listingPrices = new Map();
-                try {
-                    const maxPages = 20;
-                    for (let pageNum = 1; pageNum <= maxPages; pageNum++) {
-                        const pagePrices = await enricher.extractListingPrices(cat.idsubrubro1, pageNum);
-                        if (pagePrices.size === 0)
-                            break;
-                        for (const [id, price] of pagePrices) {
-                            listingPrices.set(id, price);
-                        }
-                    }
-                    console.log(`[Phase 2] ${catId}: ${listingPrices.size} listing prices extracted`);
-                }
-                catch (e) {
-                    console.error(`[Phase 2] ${catId}: failed to extract listing prices — ${e.message}`);
-                }
-                // Step 2: Enrich new products — detail page for desc/SKU/stock/images,
-                // listing price for costPrice (reliable source from rendered listing)
-                for (let i = 0; i < catProducts.length; i += ENRICHMENT_CONCURRENCY) {
-                    const batch = catProducts.slice(i, i + ENRICHMENT_CONCURRENCY);
-                    const results = await Promise.allSettled(batch.map(async (product) => {
-                        const enriched = await enricher.enrichProduct(product.externalId, config.baseUrl);
-                        // Build upsert payload
-                        const upsertPayload = {
-                            externalId: product.externalId,
-                            name: product.name,
-                            categories: [product.categoryId],
-                        };
-                        // Price from listing page (reliable, with conIva=1) — NOT from detail page
-                        const listingPrice = listingPrices.get(product.externalId);
-                        if (listingPrice) {
-                            let cleaned = listingPrice.replace(/[$€£¥₹]/g, '').replace(/\s/g, '').trim();
-                            const lastDot = cleaned.lastIndexOf('.');
-                            const lastComma = cleaned.lastIndexOf(',');
-                            if (lastComma > lastDot) {
-                                cleaned = cleaned.replace(/\./g, '').replace(',', '.');
-                            }
-                            else {
-                                cleaned = cleaned.replace(/,/g, '');
-                            }
-                            const price = parseFloat(cleaned);
-                            if (!isNaN(price) && price > 0) {
-                                upsertPayload.costPrice = price;
-                                upsertPayload.currency = 'USD';
-                            }
-                        }
-                        // Other fields from detail page
-                        if (enriched.description)
-                            upsertPayload.description = enriched.description;
-                        if (enriched.sku)
-                            upsertPayload.sku = enriched.sku;
-                        if (enriched.stock !== undefined)
-                            upsertPayload.stock = enriched.stock;
-                        // Images: prefer detail page images, fall back to listing images
-                        const images = enriched.imageUrls?.length > 0 ? enriched.imageUrls : product.imageUrls;
-                        if (images?.length > 0)
-                            upsertPayload.imageUrls = images;
-                        // Upsert
-                        const result = await scraper_service_1.productRepository.atomicUpsertByExternalId(upsertPayload);
-                        if (result.created) {
-                            return { ...result, externalId: product.externalId, action: 'created' };
-                        }
-                        else if (result.updated) {
-                            return { ...result, externalId: product.externalId, action: 'updated' };
-                        }
-                        return { ...result, externalId: product.externalId, action: 'unchanged' };
-                    }));
-                    for (const r of results) {
-                        if (r.status === 'fulfilled') {
-                            if (r.value.action === 'created') {
-                                scrapeResults.created++;
-                                scrapeResults.createdIds.push(r.value.externalId);
-                            }
-                            else if (r.value.action === 'updated') {
-                                scrapeResults.updated++;
-                                scrapeResults.updatedIds.push(r.value.externalId);
-                            }
+            for (let i = 0; i < newProducts.length; i += ENRICHMENT_CONCURRENCY) {
+                const batch = newProducts.slice(i, i + ENRICHMENT_CONCURRENCY);
+                const results = await Promise.allSettled(batch.map(async (product) => {
+                    const enriched = await enricher.enrichProduct(product.externalId, config.baseUrl);
+                    // Build upsert payload: listing data + enriched data
+                    const upsertPayload = {
+                        externalId: product.externalId,
+                        name: product.name,
+                        categories: [product.categoryId],
+                    };
+                    // Price from detail page
+                    if (enriched.priceRaw) {
+                        let cleaned = enriched.priceRaw.replace(/[$€£¥₹]/g, '').replace(/\s/g, '').trim();
+                        const lastDot = cleaned.lastIndexOf('.');
+                        const lastComma = cleaned.lastIndexOf(',');
+                        if (lastComma > lastDot) {
+                            cleaned = cleaned.replace(/\./g, '').replace(',', '.');
                         }
                         else {
-                            const msg = r.reason?.message || String(r);
-                            console.error(`[Phase 2] Enrichment failed: ${msg}`);
-                            scrapeResults.errors.push(msg);
+                            cleaned = cleaned.replace(/,/g, '');
+                        }
+                        const price = parseFloat(cleaned);
+                        if (!isNaN(price) && price > 0) {
+                            upsertPayload.costPrice = price;
+                            upsertPayload.currency = 'USD';
                         }
                     }
-                    console.log(`[Phase 2] ${catId} batch ${Math.floor(i / ENRICHMENT_CONCURRENCY) + 1}: ` +
-                        `${results.filter((r) => r.status === 'fulfilled').length}/${batch.length} enriched`);
+                    if (enriched.description)
+                        upsertPayload.description = enriched.description;
+                    if (enriched.sku)
+                        upsertPayload.sku = enriched.sku;
+                    if (enriched.stock !== undefined)
+                        upsertPayload.stock = enriched.stock;
+                    // Images: prefer detail page images, fall back to listing images
+                    const images = enriched.imageUrls?.length > 0 ? enriched.imageUrls : product.imageUrls;
+                    if (images?.length > 0)
+                        upsertPayload.imageUrls = images;
+                    // Upsert
+                    const result = await scraper_service_1.productRepository.atomicUpsertByExternalId(upsertPayload);
+                    if (result.created) {
+                        return { ...result, externalId: product.externalId, action: 'created' };
+                    }
+                    else if (result.updated) {
+                        return { ...result, externalId: product.externalId, action: 'updated' };
+                    }
+                    return { ...result, externalId: product.externalId, action: 'unchanged' };
+                }));
+                for (const r of results) {
+                    if (r.status === 'fulfilled') {
+                        if (r.value.action === 'created') {
+                            scrapeResults.created++;
+                            scrapeResults.createdIds.push(r.value.externalId);
+                        }
+                        else if (r.value.action === 'updated') {
+                            scrapeResults.updated++;
+                            scrapeResults.updatedIds.push(r.value.externalId);
+                        }
+                    }
+                    else {
+                        const msg = r.reason?.message || String(r);
+                        console.error(`[Phase 2] Enrichment failed: ${msg}`);
+                        scrapeResults.errors.push(msg);
+                    }
                 }
+                console.log(`[Phase 2] Batch ${Math.floor(i / ENRICHMENT_CONCURRENCY) + 1}: ` +
+                    `${results.filter((r) => r.status === 'fulfilled').length}/${batch.length} enriched`);
             }
         }
         catch (e) {
