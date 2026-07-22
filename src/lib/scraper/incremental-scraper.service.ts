@@ -47,7 +47,8 @@ async function getDb(): Promise<any> {
 // ============================================================================
 
 /**
- * Fetch one page preview for a category, extracting hash + product count.
+ * Fetch all product IDs from a category (all pages) for pre-check.
+ * This detects products that are NEW (not in previous scrape) or DISABLED (no longer present).
  */
 async function getCategoryPreview(
   client: AxiosInstance,
@@ -55,28 +56,52 @@ async function getCategoryPreview(
   baseUrl: string,
 ): Promise<{ contentHash: string; productCount: number; productIds: string[]; firstPriceUsd: number | null } | null> {
   try {
-    const url = `${baseUrl}/buscar.aspx?idsubrubro1=${idsubrubro1}&pag=1&conIva=1`;
-    const html = await safeGet(client, url, 3, 100); // 100ms delay for lightweight pre-check
-    const $ = cheerio.load(html);
-    const contentHash = crypto.createHash('md5').update(html).digest('hex');
-
     const productIds: string[] = [];
-    $('a[href*="articulo.aspx?id="]').each((_: any, el: any) => {
-      const href = $(el).attr('href') || '';
-      const match = href.match(/id=(\d+)/);
-      if (match && !productIds.includes(match[1])) {
-        productIds.push(match[1]);
-      }
-    });
-
-    // First price for quick comparison
+    const seenIds = new Set<string>();
+    const maxPages = 20;
+    const pageDelayMs = 100; // Lightweight delay between pages
     let firstPriceUsd: number | null = null;
-    const firstLink = $('a[href*="articulo.aspx?id="]').first();
-    const firstText = firstLink.text().trim();
-    const priceMatch = firstText.match(/U\$D\s+([\d.,]+)/);
-    if (priceMatch) {
-      firstPriceUsd = parseFloat(priceMatch[1].replace(',', '.'));
+
+    // Iterate through all pages to collect ALL product IDs
+    for (let pageNum = 1; pageNum <= maxPages; pageNum++) {
+      const url = `${baseUrl}/buscar.aspx?idsubrubro1=${idsubrubro1}&pag=${pageNum}&conIva=1`;
+      const html = await safeGet(client, url, 3, pageDelayMs);
+      const $ = cheerio.load(html);
+
+      // Extract product IDs from this page
+      const linksOnPage = $('a[href*="articulo.aspx?id="]').length;
+      if (linksOnPage === 0) {
+        // No more products on this page - we've reached the end
+        break;
+      }
+
+      // Extract first price only from page 1
+      if (pageNum === 1) {
+        const firstLink = $('a[href*="articulo.aspx?id="]').first();
+        const firstText = firstLink.text().trim();
+        const priceMatch = firstText.match(/U\$D\s+([\d.,]+)/);
+        if (priceMatch) {
+          firstPriceUsd = parseFloat(priceMatch[1].replace(',', '.'));
+        }
+      }
+
+      $('a[href*="articulo.aspx?id="]').each((_: any, el: any) => {
+        const href = $(el).attr('href') || '';
+        const match = href.match(/id=(\d+)/);
+        if (match && !seenIds.has(match[1])) {
+          seenIds.add(match[1]);
+          productIds.push(match[1]);
+        }
+      });
+
+      console.log(`[Pre-check] Page ${pageNum}: ${linksOnPage} products, total so far: ${productIds.length}`);
     }
+
+    // Hash of sorted IDs for change detection (stable across page order variations)
+    const sortedIds = [...productIds].sort();
+    const contentHash = crypto.createHash('md5').update(sortedIds.join(',')).digest('hex');
+
+    console.log(`[Pre-check] Category ${idsubrubro1}: ${productIds.length} total products`);
 
     return { contentHash, productCount: productIds.length, productIds, firstPriceUsd };
   } catch (e: any) {
@@ -124,9 +149,42 @@ export async function preCheckCategories(categoryFilter?: string[]): Promise<{
 
           const db = await getDb();
           const existing = await db.collection('scraper_state').findOne({ categoryId: cat.id });
-          const hasChanged = !existing || existing.contentHash !== preview.contentHash;
+          
+          // Compare product IDs to detect new/disabled products
+          // Use sorted arrays for stable comparison
+          const existingIds = existing?.productIds ? [...existing.productIds].sort() : [];
+          const newIds = [...preview.productIds].sort();
+          const hasChanged = !existing || JSON.stringify(existingIds) !== JSON.stringify(newIds);
 
-          // Only update hash/count/price — productIds are maintained by full scrape
+          // Determine what changed (new vs discontinued)
+          const existingSet = new Set(existing?.productIds || []);
+          const newSet = new Set(preview.productIds);
+          const newProducts: string[] = [];
+          const discontinuedProducts: string[] = [];
+
+          for (const id of preview.productIds) {
+            if (!existingSet.has(id)) newProducts.push(id);
+          }
+          for (const id of existing?.productIds || []) {
+            if (!newSet.has(id)) discontinuedProducts.push(id);
+          }
+
+          // Log changes detected
+          if (hasChanged) {
+            console.log(
+              `[Pre-check] ${cat.id}: CHANGED | ` +
+              `new=${newProducts.length}, discontinued=${discontinuedProducts.length}, ` +
+              `total=${preview.productCount} products`
+            );
+            if (newProducts.length > 0) {
+              console.log(`[Pre-check]   NEW products: ${newProducts.slice(0, 5).join(', ')}${newProducts.length > 5 ? '...' : ''}`);
+            }
+            if (discontinuedProducts.length > 0) {
+              console.log(`[Pre-check]   DISCONTINUED: ${discontinuedProducts.slice(0, 5).join(', ')}${discontinuedProducts.length > 5 ? '...' : ''}`);
+            }
+          }
+
+          // Update scraper_state with all product IDs (now we track ALL, not just page 1)
           await db.collection('scraper_state').updateOne(
             { categoryId: cat.id },
             {
@@ -135,6 +193,7 @@ export async function preCheckCategories(categoryFilter?: string[]): Promise<{
                 idsubrubro1: cat.idsubrubro1,
                 contentHash: preview.contentHash,
                 productCount: preview.productCount,
+                productIds: preview.productIds, // Store ALL product IDs from all pages
                 firstPriceUsd: preview.firstPriceUsd,
                 capturedAt: new Date(),
               },
@@ -148,10 +207,12 @@ export async function preCheckCategories(categoryFilter?: string[]): Promise<{
 
           const state = await db.collection('scraper_state').findOne({ categoryId: cat.id });
           const storedCount = state?.productIds?.length || 0;
-          console.log(
-            `[Pre-check] ${cat.id}: ${hasChanged ? 'CHANGED' : 'unchanged'} ` +
-            `| page1=${preview.productCount} products | stored=${storedCount} total IDs`
-          );
+          if (!hasChanged) {
+            console.log(
+              `[Pre-check] ${cat.id}: unchanged | ` +
+              `total=${preview.productCount} products`
+            );
+          }
 
           return { categoryId: cat.id, status: hasChanged ? ('changed' as const) : ('unchanged' as const) };
         } catch (e: any) {

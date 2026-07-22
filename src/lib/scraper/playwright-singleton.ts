@@ -30,6 +30,7 @@ class PlaywrightSingleton {
   private initialized = false;
   private baseUrl = '';
   private launchPromise: Promise<void> | null = null;
+  private initPromise: Promise<void> | null = null;
 
   private constructor() {}
 
@@ -85,6 +86,23 @@ class PlaywrightSingleton {
   }
 
   async initSession(baseUrl: string, credentials?: { email: string; password: string }): Promise<void> {
+    // Already initialized - wait for the existing promise
+    if (this.initialized && this.context) {
+      return;
+    }
+
+    // Prevent concurrent initialization
+    if (this.initPromise) {
+      await this.initPromise;
+      return;
+    }
+
+    this.initPromise = this._doInitSession(baseUrl, credentials);
+    await this.initPromise;
+    this.initPromise = null;
+  }
+
+  private async _doInitSession(baseUrl: string, credentials?: { email: string; password: string }): Promise<void> {
     if (this.initialized || !this.context) {
       return;
     }
