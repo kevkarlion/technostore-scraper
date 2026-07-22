@@ -1,15 +1,18 @@
 "use strict";
 /**
- * Incremental Scraper Service — Axios + Cheerio.
+ * Incremental Scraper Service — Two-phase pipeline.
  *
- * Provides the pre-check + full-scrape pipeline used by the scheduler
- * and the HTTP API. No browser, no Playwright — pure HTTP + HTML parsing.
+ * Phase 1 (Axios/HTTP-only):
+ *   - preCheckCategories(): hash page 1 of each category, compare with scraper_state.
+ *   - scrapeCategory(): listing pages → product IDs, names, listing images.
+ *   - Compare with DB → identify NEW products.
+ *   - If no new products → DONE (no browser needed, 99% of runs).
  *
- * Flow:
- *   1. preCheckCategories(): GET first page of each category, compute hash,
- *      compare with scraper_state.
- *   2. runIncrementalScraper(): pre-check → scrape all categories via
- *      runScraper() → return results.
+ * Phase 2 (Playwright — only if new products exist):
+ *   - Launch ONE browser instance.
+ *   - Enrich each new product from detail page (price, description, SKU, stock, images).
+ *   - Upsert to DB.
+ *   - Close browser.
  */
 var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
     if (k2 === undefined) k2 = k;
@@ -54,6 +57,7 @@ const cheerio = __importStar(require("cheerio"));
 const crypto_1 = __importDefault(require("crypto"));
 const config_1 = require("./config");
 const scraper_service_1 = require("./scraper.service");
+const playwright_enricher_1 = require("./playwright-enricher");
 const http_client_1 = require("./http-client");
 // ============================================================================
 // PERSISTENT STORE (same singleton pattern as scraper.service)
@@ -179,28 +183,30 @@ async function preCheckCategories(categoryFilter) {
     console.log(`[Incremental] Pre-check complete: ${result.changed.length} changed, ${result.unchanged.length} unchanged, ${result.errors.length} errors`);
     return result;
 }
-// ============================================================================
-// RUN INCREMENTAL SCRAPER
-// ============================================================================
 /**
- * Run the full incremental scraper:
- *   1. Pre-check categories to detect changes.
- *   2. Scrape only changed categories (pre-check product IDs used for discontinued).
- *   3. Return aggregated results.
+ * Run the incremental scraper in two phases:
  *
- * Session optimization: creates ONE authenticated HTTP session shared across all
- * categories, instead of logging in 127 times.
+ * Phase 1 (Axios/HTTP-only, no browser):
+ *   - Pre-check categories to detect changes.
+ *   - Scrape listing pages → product IDs, names, listing images.
+ *   - Compare with DB → identify NEW products.
+ *   - If no new products → DONE (99% of runs).
+ *
+ * Phase 2 (Playwright, only if new products exist):
+ *   - Launch ONE browser instance.
+ *   - Enrich each new product from detail page.
+ *   - Upsert to DB.
+ *   - Close browser.
  *
  * @param forceFullScrape - If true, skip pre-check and scrape all categories.
- * @param categoryId - Optional parent category ID to scrape (e.g., 'conectividad').
- *                     If provided, only subcategories of this parent are processed.
+ * @param categoryId - Optional parent/subcategory ID to filter.
+ * @param skipExistingCheck - If true, re-enrich ALL products (not just new ones).
  */
 async function runIncrementalScraper(forceFullScrape = false, categoryId, skipExistingCheck = false) {
-    console.log('[Incremental] Starting incremental scraper...');
+    console.log('[Incremental] Starting incremental scraper (two-phase)...');
+    const startTime = Date.now();
     const config = (0, config_1.getScraperConfig)();
-    // Filter categories: if categoryId is provided, only use matching subcategories
-    // Supports both parent IDs (e.g., 'conectividad' → all its subcategories)
-    // and direct subcategory IDs (e.g., 'routers' → just that one)
+    // Filter categories
     let categories = config_1.jotakpCategories.filter((c) => c.idsubrubro1 > 0);
     if (categoryId) {
         const asParent = categories.filter((c) => c.parentId === categoryId);
@@ -209,101 +215,97 @@ async function runIncrementalScraper(forceFullScrape = false, categoryId, skipEx
             console.log(`[Incremental] Filtering to parent "${categoryId}" — ${categories.length} subcategories`);
         }
         else {
-            // categoryId is itself a subcategory
             categories = categories.filter((c) => c.id === categoryId);
             console.log(`[Incremental] Filtering to subcategory "${categoryId}" — ${categories.length} categories`);
         }
     }
-    // Create ONE shared HTTP client for the entire run
+    // Create ONE shared HTTP client + login ONCE
     const sharedHttp = (0, http_client_1.createHttpClient)(config);
-    // Login ONCE — this populates the cookie jar on sharedHttp
-    const { ScraperService } = await Promise.resolve().then(() => __importStar(require('./scraper.service')));
-    const bootScraper = new ScraperService(config, {}, sharedHttp);
+    const bootScraper = new scraper_service_1.ScraperService(config, {}, sharedHttp);
     await bootScraper.login();
-    console.log('[Incremental] Shared session established for all categories');
-    // Step 1: Pre-check
+    console.log('[Incremental] Shared HTTP session established');
+    // Global timeout: 30 minutes
+    const GLOBAL_TIMEOUT_MS = 30 * 60 * 1000;
+    const globalTimeout = setTimeout(() => {
+        console.error('[Incremental] GLOBAL TIMEOUT: scraper exceeded 30 minutes, aborting');
+        process.exit(1);
+    }, GLOBAL_TIMEOUT_MS);
+    // ============================================================================
+    // STEP 1: Pre-check
+    // ============================================================================
     let preCheckResult;
     if (forceFullScrape) {
         console.log('[Incremental] Force full scrape — skipping pre-check');
         preCheckResult = { changed: categories.map((c) => c.id), unchanged: [], errors: [] };
     }
     else {
-        // Pass category IDs to preCheckCategories for filtering
         preCheckResult = await preCheckCategories(categories.map((c) => c.id));
     }
     const toScrape = [...preCheckResult.changed, ...preCheckResult.errors];
-    // Collect existing product IDs per category from pre-check — Playwright will skip these
-    // UNLESS skipExistingCheck is true (forces Playwright to re-enrich ALL products)
+    // Collect existing product IDs per category
     const db = await getDb();
     const existingProductIdsByCategory = new Map();
     if (!skipExistingCheck) {
-        for (const categoryId of preCheckResult.changed) {
-            const state = await db.collection('scraper_state').findOne({ categoryId });
+        for (const catId of preCheckResult.changed) {
+            const state = await db.collection('scraper_state').findOne({ categoryId: catId });
             if (state?.productIds?.length > 0) {
-                existingProductIdsByCategory.set(categoryId, state.productIds);
-                console.log(`[Incremental] ${categoryId}: ${state.productIds.length} known products from previous scrape — Playwright will skip these`);
+                existingProductIdsByCategory.set(catId, state.productIds);
+                console.log(`[Incremental] ${catId}: ${state.productIds.length} known products`);
             }
         }
     }
     else {
-        console.log('[Incremental] skipExistingCheck=true — Playwright will re-enrich ALL products');
+        console.log('[Incremental] skipExistingCheck=true — will re-enrich ALL products');
     }
-    console.log(`[Incremental] Pre-check: ${preCheckResult.changed.length} changed, ${preCheckResult.unchanged.length} unchanged, ${preCheckResult.errors.length} errors — scraping ${toScrape.length} categories`);
-    const scrapeResults = { created: 0, updated: 0, createdIds: [], updatedIds: [], errors: [], durationMs: 0, discontinued: 0 };
-    const startTime = Date.now();
-    const MAX_PARALLEL = 4;
-    // Step 2a: Mark discontinued + update timestamp for UNCHANGED categories
-    // Uses the product IDs captured during the last successful full scrape (already in scraper_state).
+    console.log(`[Incremental] Pre-check: ${preCheckResult.changed.length} changed, ` +
+        `${preCheckResult.unchanged.length} unchanged, ${preCheckResult.errors.length} errors`);
+    // ============================================================================
+    // STEP 2: Mark discontinued for UNCHANGED categories (HTTP-only, no browser)
+    // ============================================================================
     let totalDiscontinued = 0;
-    for (const categoryId of preCheckResult.unchanged) {
+    for (const catId of preCheckResult.unchanged) {
         try {
-            const state = await db.collection('scraper_state').findOne({ categoryId });
+            const state = await db.collection('scraper_state').findOne({ categoryId: catId });
             if (state?.productIds?.length > 0) {
-                const discontinuedCount = await markDiscontinuedFromIds(categoryId, state.productIds);
+                const discontinuedCount = await markDiscontinuedFromIds(catId, state.productIds);
                 totalDiscontinued += discontinuedCount;
                 if (discontinuedCount > 0) {
-                    console.log(`[Discontinued] ${categoryId}: marked ${discontinuedCount} products as discontinued (from ${state.productIds.length} known IDs)`);
-                }
-                else {
-                    console.log(`[Discontinued] ${categoryId}: no changes (all ${state.productIds.length} products still active)`);
+                    console.log(`[Discontinued] ${catId}: marked ${discontinuedCount} products`);
                 }
             }
-            await db.collection('scraper_state').updateOne({ categoryId }, { $set: { lastScrapeAt: new Date() } });
+            await db.collection('scraper_state').updateOne({ categoryId: catId }, { $set: { lastScrapeAt: new Date() } });
         }
         catch (e) {
-            console.error(`[Discontinued] ${categoryId}: ERROR — ${e.message}`);
+            console.error(`[Discontinued] ${catId}: ERROR — ${e.message}`);
         }
     }
-    scrapeResults.discontinued = totalDiscontinued;
-    // Step 2b: Scrape only CHANGED + ERROR categories, sharing the authenticated session
-    for (let i = 0; i < toScrape.length; i += MAX_PARALLEL) {
-        const batch = toScrape.slice(i, i + MAX_PARALLEL);
-        console.log(`[Incremental] Scraping batch ${Math.floor(i / MAX_PARALLEL) + 1}: ${batch.join(', ')}`);
-        const batchResults = await Promise.all(batch.map(async (categoryId) => {
-            try {
-                // Pass existing product IDs so Playwright only enriches NEW products
-                const existingProductIds = existingProductIdsByCategory.get(categoryId) || [];
-                const result = await (0, scraper_service_1.runScraper)({ categoryId, source: 'incremental', skipLogin: true, existingProductIds }, sharedHttp);
-                // scraper_state.productIds is now updated by scraper.service.ts itself
-                // (runs for ALL sources, not just incremental)
-                return result;
+    // ============================================================================
+    // PHASE 1: HTTP-only discovery — listing pages → new product IDs
+    // ============================================================================
+    console.log(`\n[Phase 1] HTTP-only discovery for ${toScrape.length} categories...`);
+    const newProducts = [];
+    const categoryExternalIds = {};
+    const scrapeErrors = [];
+    for (const catId of toScrape) {
+        const cat = config_1.jotakpCategories.find((c) => c.id === catId);
+        if (!cat)
+            continue;
+        try {
+            const scraper = new scraper_service_1.ScraperService(config, { categoryId: catId, skipLogin: true }, sharedHttp);
+            const { products, externalIds } = await scraper.scrapeCategory(cat.idsubrubro1);
+            categoryExternalIds[catId] = externalIds;
+            // Identify new products (not in previous scraper_state)
+            const existingIds = new Set(existingProductIdsByCategory.get(catId) || []);
+            const newOnes = products.filter((p) => !existingIds.has(p.externalId));
+            for (const p of newOnes) {
+                newProducts.push({
+                    externalId: p.externalId,
+                    name: p.name,
+                    imageUrls: p.imageUrls,
+                    categoryId: catId,
+                    idsubrubro1: cat.idsubrubro1,
+                });
             }
-<<<<<<< HEAD
-            catch (e) {
-                console.error(`[Incremental] Error scraping ${categoryId}:`, e.message);
-                return { created: 0, updated: 0, createdIds: [], updatedIds: [], errors: [`Error scraping ${categoryId}: ${e.message}`], success: false };
-            }
-        }));
-        for (const r of batchResults) {
-            scrapeResults.created += r.created || 0;
-            scrapeResults.updated += r.updated || 0;
-            if (r.createdIds)
-                scrapeResults.createdIds.push(...r.createdIds);
-            if (r.updatedIds)
-                scrapeResults.updatedIds.push(...r.updatedIds);
-            if (r.errors) {
-                scrapeResults.errors.push(...r.errors);
-=======
             console.log(`[Phase 1] ${catId}: ${products.length} products found, ` +
                 `${newOnes.length} new, ${existingIds.size} existing`);
         }
@@ -398,15 +400,40 @@ async function runIncrementalScraper(forceFullScrape = false, categoryId, skipEx
                 }
                 console.log(`[Phase 2] Batch ${Math.floor(i / ENRICHMENT_CONCURRENCY) + 1}: ` +
                     `${results.filter((r) => r.status === 'fulfilled').length}/${batch.length} enriched`);
->>>>>>> feat/axios-first-incremental
             }
         }
+        catch (e) {
+            console.error(`[Phase 2] Playwright error: ${e.message}`);
+            scrapeResults.errors.push(`Playwright error: ${e.message}`);
+        }
+        finally {
+            await enricher?.close();
+            console.log('[Phase 2] Playwright closed');
+        }
     }
+    // ============================================================================
+    // STEP 3: Update scraper_state for CHANGED categories
+    // ============================================================================
+    for (const catId of toScrape) {
+        const externalIds = categoryExternalIds[catId];
+        if (!externalIds)
+            continue;
+        try {
+            await db.collection('scraper_state').updateOne({ categoryId: catId }, { $set: { productIds: externalIds, lastScrapeAt: new Date() } }, { upsert: true });
+        }
+        catch (e) {
+            console.error(`[Incremental] ${catId}: failed to update scraper_state — ${e.message}`);
+        }
+    }
+    // ============================================================================
+    // Done
+    // ============================================================================
     scrapeResults.durationMs = Date.now() - startTime;
-    console.log(`[Incremental] Done in ${(scrapeResults.durationMs / 1000).toFixed(1)}s: ` +
+    clearTimeout(globalTimeout);
+    console.log(`\n[Incremental] Done in ${(scrapeResults.durationMs / 1000).toFixed(1)}s: ` +
         `${scrapeResults.created} created, ${scrapeResults.updated} updated, ` +
         `${scrapeResults.discontinued} discontinued | ` +
-        `scraped ${toScrape.length}/${categories.length} categories`);
+        `new products enriched: ${newProducts.length > 0 ? 'yes' : 'none (fast path)'}`);
     return {
         success: true,
         preCheck: {
@@ -419,9 +446,11 @@ async function runIncrementalScraper(forceFullScrape = false, categoryId, skipEx
         timestamp: new Date(),
     };
 }
+// ============================================================================
+// HELPERS
+// ============================================================================
 /**
  * Mark products as discontinued if they're NOT in the given active IDs list.
- * Uses the same logic as productRepository.markDiscontinued but directly.
  */
 async function markDiscontinuedFromIds(categoryId, activeExternalIds) {
     const db = await getDb();
