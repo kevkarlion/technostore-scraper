@@ -28,7 +28,7 @@ import type {
 } from './types';
 import { ScraperError } from './types';
 import { createHttpClient, safeGet, safePost } from './http-client';
-import { PlaywrightEnricher } from './playwright-enricher';
+import { playwrightSingleton } from './playwright-singleton';
 import crypto from 'crypto';
 
 // ============================================================================
@@ -488,7 +488,7 @@ const name = fullText.replace(/U\$D\s*[\d.,]+(\s*\+\s*IVA\s*[\d.]+%)*(\$\s*[\d.,
     const errors: string[] = [];
     const categoryExternalIds: Record<string, string[]> = {};
 
-    let playwrightEnricher: PlaywrightEnricher | null = null;
+    let playwrightReady = false;
 
     try {
       // Login first (skip if using a pre-authenticated shared session)
@@ -496,18 +496,18 @@ const name = fullText.replace(/U\$D\s*[\d.,]+(\s*\+\s*IVA\s*[\d.]+%)*(\$\s*[\d.,
         await this.login();
       }
 
-      // Initialize Playwright for full product enrichment (prices, desc, SKU, images)
+      // Initialize Playwright singleton for product enrichment
       try {
-        playwrightEnricher = new PlaywrightEnricher();
-        await playwrightEnricher.launch();
-        await playwrightEnricher.initSession(this.config.baseUrl, {
+        await playwrightSingleton.launch();
+        await playwrightSingleton.initSession(this.config.baseUrl, {
           email: this.config.email,
           password: this.config.password,
         });
-        console.log('[Scraper] Playwright launched and session initialized');
+        playwrightReady = true;
+        console.log('[Scraper] Playwright singleton ready');
       } catch (e: any) {
         console.error('[Scraper] Failed to launch Playwright:', e.message);
-        playwrightEnricher = null;
+        playwrightReady = false;
       }
 
       // Process each category
@@ -528,11 +528,11 @@ const name = fullText.replace(/U\$D\s*[\d.,]+(\s*\+\s*IVA\s*[\d.]+%)*(\$\s*[\d.,
           // This is the SAME logic as playwright-listing — prices come from the
           // rendered listing text ("U$D 76,21"), not from fragile detail page selectors.
           const listingPrices = new Map<string, string>();
-          if (playwrightEnricher && productsToEnrich.length > 0) {
+          if (playwrightReady && productsToEnrich.length > 0) {
             try {
               const maxPages = 20;
               for (let pageNum = 1; pageNum <= maxPages; pageNum++) {
-                const pagePrices = await playwrightEnricher.extractListingPrices(cat.idsubrubro1, pageNum);
+                const pagePrices = await playwrightSingleton.extractListingPrices(cat.idsubrubro1, pageNum);
                 if (pagePrices.size === 0) break;
                 for (const [id, price] of pagePrices) {
                   listingPrices.set(id, price);
@@ -546,12 +546,12 @@ const name = fullText.replace(/U\$D\s*[\d.,]+(\s*\+\s*IVA\s*[\d.]+%)*(\$\s*[\d.,
 
           // Step 2: Enrich new products — detail page for desc/SKU/stock/images,
           // listing price for costPrice (reliable source)
-          if (playwrightEnricher && productsToEnrich.length > 0) {
+          if (playwrightReady && productsToEnrich.length > 0) {
             for (let i = 0; i < productsToEnrich.length; i += ENRICHMENT_CONCURRENCY) {
               const batch = productsToEnrich.slice(i, i + ENRICHMENT_CONCURRENCY);
               const results = await Promise.allSettled(
                 batch.map(async (product) => {
-                  const enriched = await playwrightEnricher!.enrichProduct(product.externalId, this.config.baseUrl);
+                  const enriched = await playwrightSingleton.enrichProduct(product.externalId, this.config.baseUrl);
 
                   // Price from listing page (reliable) — NOT from detail page
                   const listingPrice = listingPrices.get(product.externalId);
@@ -705,7 +705,10 @@ const name = fullText.replace(/U\$D\s*[\d.,]+(\s*\+\s*IVA\s*[\d.]+%)*(\$\s*[\d.,
       errors.push(`Fatal error: ${e.message}`);
       console.error('[Scraper] Fatal error:', e);
     } finally {
-      await playwrightEnricher?.close();
+      // Close Playwright singleton (will be reused across runs if needed)
+      if (playwrightReady) {
+        await playwrightSingleton.close();
+      }
     }
 
     return {

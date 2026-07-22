@@ -21,6 +21,10 @@ import { getScraperConfig, jotakpCategories } from './config';
 import { createHttpClient, safeGet, delay } from './http-client';
 import type { ScraperConfig, ScraperResult, ScraperRunRequest, ScraperCategory } from './types';
 import { ScraperError } from './types';
+import { playwrightSingleton } from './playwright-singleton';
+
+// Configure Playwright to use the browsers installed in user's cache
+const PLAYWRIGHT_BROWSERS_PATH = process.env.PLAYWRIGHT_BROWSERS_PATH || '/home/kriq/.cache/ms-playwright';
 
 // ============================================================================
 // SLUG GENERATION UTILITIES
@@ -110,8 +114,10 @@ class PlaywrightListingEnricher {
   private baseUrl: string = '';
 
   async launch(): Promise<void> {
+    const chromiumPath = `${PLAYWRIGHT_BROWSERS_PATH}/chromium-1228/chrome-linux64/chrome`;
     this.browser = await chromium.launch({
       headless: true,
+      executablePath: chromiumPath,
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
@@ -591,7 +597,7 @@ export class ScraperPlaywrightListingService {
     const updatedIds: string[] = [];
     const errors: string[] = [];
 
-    let enricher: PlaywrightListingEnricher | null = null;
+    let playwrightReady = false;
 
     try {
       // Login
@@ -599,18 +605,18 @@ export class ScraperPlaywrightListingService {
         await this.login();
       }
 
-      // Launch Playwright
+      // Initialize Playwright singleton
       try {
-        enricher = new PlaywrightListingEnricher();
-        await enricher.launch();
-        await enricher.initSession(this.config.baseUrl, {
+        await playwrightSingleton.launch();
+        await playwrightSingleton.initSession(this.config.baseUrl, {
           email: this.config.email,
           password: this.config.password,
         });
-        console.log('[Scraper] Playwright launched');
+        playwrightReady = true;
+        console.log('[Scraper] Playwright singleton ready');
       } catch (e: any) {
         console.error('[Scraper] Failed to launch Playwright:', e.message);
-        enricher = null;
+        playwrightReady = false;
       }
 
       // Process each category
@@ -647,12 +653,12 @@ export class ScraperPlaywrightListingService {
           const ENRICHMENT_CONCURRENCY = 3;
           let enrichedCount = 0;
 
-          if (enricher && productsToEnrich.length > 0) {
+          if (playwrightReady && productsToEnrich.length > 0) {
             for (let i = 0; i < productsToEnrich.length; i += ENRICHMENT_CONCURRENCY) {
               const batch = productsToEnrich.slice(i, i + ENRICHMENT_CONCURRENCY);
               const results = await Promise.allSettled(
                 batch.map(async ({ product }) => {
-                  const enriched = await enricher!.enrichProduct(product.externalId);
+                  const enriched = await playwrightSingleton.enrichProduct(product.externalId);
                   enriched.name = product.name;
                   enriched.categories = [cat.id];
 
@@ -733,7 +739,10 @@ export class ScraperPlaywrightListingService {
       errors.push(`Fatal error: ${e.message}`);
       console.error('[Scraper] Fatal error:', e);
     } finally {
-      await enricher?.close();
+      // Close Playwright singleton
+      if (playwrightReady) {
+        await playwrightSingleton.close();
+      }
     }
 
     return {

@@ -54,6 +54,9 @@ const cheerio = __importStar(require("cheerio"));
 const playwright_1 = require("playwright");
 const config_1 = require("./config");
 const http_client_1 = require("./http-client");
+const playwright_singleton_1 = require("./playwright-singleton");
+// Configure Playwright to use the browsers installed in user's cache
+const PLAYWRIGHT_BROWSERS_PATH = process.env.PLAYWRIGHT_BROWSERS_PATH || '/home/kriq/.cache/ms-playwright';
 // ============================================================================
 // SLUG GENERATION UTILITIES
 // ============================================================================
@@ -110,8 +113,10 @@ class PlaywrightListingEnricher {
         this.baseUrl = '';
     }
     async launch() {
+        const chromiumPath = `${PLAYWRIGHT_BROWSERS_PATH}/chromium-1228/chrome-linux64/chrome`;
         this.browser = await playwright_1.chromium.launch({
             headless: true,
+            executablePath: chromiumPath,
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
@@ -524,25 +529,25 @@ class ScraperPlaywrightListingService {
         const createdIds = [];
         const updatedIds = [];
         const errors = [];
-        let enricher = null;
+        let playwrightReady = false;
         try {
             // Login
             if (!this.request.skipLogin) {
                 await this.login();
             }
-            // Launch Playwright
+            // Initialize Playwright singleton
             try {
-                enricher = new PlaywrightListingEnricher();
-                await enricher.launch();
-                await enricher.initSession(this.config.baseUrl, {
+                await playwright_singleton_1.playwrightSingleton.launch();
+                await playwright_singleton_1.playwrightSingleton.initSession(this.config.baseUrl, {
                     email: this.config.email,
                     password: this.config.password,
                 });
-                console.log('[Scraper] Playwright launched');
+                playwrightReady = true;
+                console.log('[Scraper] Playwright singleton ready');
             }
             catch (e) {
                 console.error('[Scraper] Failed to launch Playwright:', e.message);
-                enricher = null;
+                playwrightReady = false;
             }
             // Process each category
             for (const cat of this.categories) {
@@ -570,11 +575,11 @@ class ScraperPlaywrightListingService {
                     // Step 4: Playwright detail → enrich products that need it
                     const ENRICHMENT_CONCURRENCY = 3;
                     let enrichedCount = 0;
-                    if (enricher && productsToEnrich.length > 0) {
+                    if (playwrightReady && productsToEnrich.length > 0) {
                         for (let i = 0; i < productsToEnrich.length; i += ENRICHMENT_CONCURRENCY) {
                             const batch = productsToEnrich.slice(i, i + ENRICHMENT_CONCURRENCY);
                             const results = await Promise.allSettled(batch.map(async ({ product }) => {
-                                const enriched = await enricher.enrichProduct(product.externalId);
+                                const enriched = await playwright_singleton_1.playwrightSingleton.enrichProduct(product.externalId);
                                 enriched.name = product.name;
                                 enriched.categories = [cat.id];
                                 // ALWAYS derive price from priceRaw from DETAIL PAGE (enricher)
@@ -645,7 +650,10 @@ class ScraperPlaywrightListingService {
             console.error('[Scraper] Fatal error:', e);
         }
         finally {
-            await enricher?.close();
+            // Close Playwright singleton
+            if (playwrightReady) {
+                await playwright_singleton_1.playwrightSingleton.close();
+            }
         }
         return {
             success: errors.length === 0 || !errors.some((e) => e.startsWith('Fatal')),

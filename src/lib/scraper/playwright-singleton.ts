@@ -1,51 +1,66 @@
+/**
+ * Playwright Singleton — shared browser instance across all scraper services.
+ * 
+ * Railway has strict PID limits. Using a single browser instance instead of
+ * launching multiple browsers reduces resource usage significantly.
+ */
+
 import { chromium, Browser, BrowserContext, Page } from 'playwright';
 
-// Configure Playwright to use the browsers installed in user's cache
 const PLAYWRIGHT_BROWSERS_PATH = process.env.PLAYWRIGHT_BROWSERS_PATH || '/home/kriq/.cache/ms-playwright';
 
-export interface EnrichedProductData {
-  /** USD price pre-IVA: "169,37" */
+interface EnrichedProductData {
   priceRaw?: string;
-  /** ARS price: "255.748,70" */
   priceWithIvaRaw?: string;
-  /** Product description */
   description?: string;
-  /** Product SKU */
   sku?: string;
-  /** Stock quantity */
   stock?: number;
-  /** Image URLs from detail page */
   imageUrls?: string[];
+  // Added by caller
+  name?: string;
+  externalId?: string;
+  categories?: string[];
+  price?: number;
 }
 
-/**
- * PlaywrightEnricher — navigates to each product's detail page and scrapes
- * the rendered DOM for prices, description, SKU, stock, and images.
- *
- * The supplier site (Cappelletti/jotakp) only renders price HTML when:
- *   1. The user is logged in (ASP.NET session with auth)
- *   2. A sucursal (branch) is selected in the session
- *
- * HTTP-only scraping can't get prices because the server strips price
- * elements from the HTML response. Playwright runs a real browser that
- * maintains the full session, so prices appear in the rendered DOM.
- *
- * Flow:
- *   1. Login via Playwright (fills login form directly)
- *   2. Select branch (Cipolletti, Id=1)
- *   3. For each product: navigate to articulo.aspx?id=X, scrape DOM
- */
-export class PlaywrightEnricher {
+class PlaywrightSingleton {
+  private static instance: PlaywrightSingleton;
   private browser: Browser | null = null;
   private context: BrowserContext | null = null;
   private initialized = false;
-  private baseUrl: string = '';
+  private baseUrl = '';
+  private launchPromise: Promise<void> | null = null;
 
-  /**
-   * Launch the browser. Call once before any other method.
-   */
+  private constructor() {}
+
+  static getInstance(): PlaywrightSingleton {
+    if (!PlaywrightSingleton.instance) {
+      PlaywrightSingleton.instance = new PlaywrightSingleton();
+    }
+    return PlaywrightSingleton.instance;
+  }
+
   async launch(): Promise<void> {
+    // Already launched
+    if (this.browser) return;
+    
+    // Prevent concurrent launches
+    if (this.launchPromise) {
+      await this.launchPromise;
+      return;
+    }
+
+    this.launchPromise = this._doLaunch();
+    await this.launchPromise;
+    this.launchPromise = null;
+  }
+
+  private async _doLaunch(): Promise<void> {
+    if (this.browser) return;
+
     const chromiumPath = `${PLAYWRIGHT_BROWSERS_PATH}/chromium-1228/chrome-linux64/chrome`;
+    console.log('[PlaywrightSingleton] Launching browser:', chromiumPath);
+
     this.browser = await chromium.launch({
       headless: true,
       executablePath: chromiumPath,
@@ -55,63 +70,54 @@ export class PlaywrightEnricher {
         '--disable-dev-shm-usage',
         '--disable-gpu',
         '--disable-software-rasterizer',
+        '--disable-extensions',
+        '--disable-background-networking',
+        '--disable-default-apps',
+        '--disable-sync',
+        '--disable-translate',
+        '--single-process', // Reduce processes
+        '--js-flags=--max-old-space-size=256', // Limit JS heap
       ],
     });
+
     this.context = await this.browser.newContext();
+    console.log('[PlaywrightSingleton] Browser launched successfully');
   }
 
-  /**
-   * Inject cookies from an external HTTP session (e.g., axios tough-cookie jar).
-   * Use this if you already have an authenticated session.
-   */
-  async injectCookies(cookies: Array<{ name: string; value: string; domain: string; path: string }>): Promise<void> {
-    if (!this.context) throw new Error('Browser not launched');
-    await this.context.addCookies(cookies);
-  }
-
-  /**
-   * Initialize the session: login via the actual login page, then select branch.
-   * This is more reliable than injecting cookies because it lets ASP.NET
-   * establish the session properly via its own forms and page lifecycle.
-   *
-   * Must be called once before enrichProduct().
-   */
   async initSession(baseUrl: string, credentials?: { email: string; password: string }): Promise<void> {
-    if (!this.context || this.initialized) return;
-    this.baseUrl = baseUrl;
+    if (this.initialized || !this.context) {
+      return;
+    }
 
+    this.baseUrl = baseUrl;
     const page = await this.context.newPage();
+
     try {
       // Navigate to login page
       await page.goto(`${baseUrl}/loginext.aspx`, { waitUntil: 'networkidle', timeout: 20000 });
 
       if (credentials) {
-        // Fill login form and submit
         await page.fill('#TxtEmail', credentials.email);
         await page.fill('#TxtPass1', credentials.password);
 
-        // Click login button and wait for navigation
         await Promise.all([
           page.waitForNavigation({ waitUntil: 'networkidle', timeout: 15000 }).catch(() => {}),
           page.click('#BtnIngresar'),
         ]);
-
-        console.log('[Playwright] Login submitted');
+        console.log('[PlaywrightSingleton] Login submitted');
       }
 
-      // Navigate to the site to establish session context
+      // Navigate to site to establish session
       await page.goto(baseUrl, { waitUntil: 'networkidle', timeout: 15000 });
 
-      // Select branch (Cipolletti, Id=1) via PageMethod
+      // Select branch (Cipolletti, Id=1)
       const branchOk = await page.evaluate(async () => {
         try {
           if (typeof (window as any).PageMethods !== 'undefined') {
-            // Use the proper ASP.NET PageMethods
             return await new Promise<boolean>((resolve) => {
               (window as any).PageMethods.SeleccionarSucursal(
                 1,
                 (response: any) => {
-                  // Simulate OnSuccessSelSuc callback
                   const el = document.getElementById('varIdDeposito');
                   if (el) (el as HTMLInputElement).value = response.IdDepositoDefecto;
                   resolve(true);
@@ -120,7 +126,6 @@ export class PlaywrightEnricher {
               );
             });
           }
-          // Fallback: direct fetch
           const resp = await fetch('/articulo.aspx/SeleccionarSucursal', {
             method: 'POST',
             headers: {
@@ -137,75 +142,85 @@ export class PlaywrightEnricher {
 
       if (branchOk) {
         this.initialized = true;
-        console.log('[Playwright] Session initialized: login OK, branch Cipolletti selected');
+        console.log('[PlaywrightSingleton] Session initialized: login OK, branch Cipolletti selected');
       } else {
-        console.error('[Playwright] Failed to select branch');
+        console.error('[PlaywrightSingleton] Failed to select branch');
       }
     } finally {
       await page.close();
     }
   }
 
+  async newPage(): Promise<Page> {
+    if (!this.context) throw new Error('Browser not launched');
+    return this.context.newPage();
+  }
+
+  isInitialized(): boolean {
+    return this.initialized;
+  }
+
+  getBaseUrl(): string {
+    return this.baseUrl;
+  }
+
+  async close(): Promise<void> {
+    if (this.browser) {
+      await this.browser.close();
+      this.browser = null;
+      this.context = null;
+      this.initialized = false;
+      console.log('[PlaywrightSingleton] Browser closed');
+    }
+  }
+
+  // ============================================================================
+  // ENRICHMENT METHODS (delegated from PlaywrightEnricher)
+  // ============================================================================
+
   /**
-   * Enrich a product by navigating to its detail page and scraping the DOM.
-   *
-   * Detail page structure (when logged in with branch selected):
-   *   div.col-12.tg-body-f18        → "U$D 169,37"     (USD price, pre-IVA)
-   *   div.col-12.tg-body-f10.pt-0   → "$ 255.748,70"   (ARS price)
-   *   div#divArticuloDescripcion    → description text
-   *   span[id*="lblCodigo"]         → SKU
-   *   span[id*="lblStock"]          → stock info
-   *   div.tg-img-overlay.artImg     → images (data-src attribute)
+   * Enrich a product by navigating to its detail page.
    */
   async enrichProduct(externalId: string, baseUrl?: string): Promise<EnrichedProductData> {
-    if (!this.context) throw new Error('Browser not launched');
     const url = baseUrl || this.baseUrl;
     if (!url) throw new Error('baseUrl required — call initSession first');
 
-    // Initialize session on first call
     if (!this.initialized) {
       await this.initSession(url);
     }
 
-    const page: Page = await this.context.newPage();
+    const page = await this.newPage();
     try {
       await page.goto(`${url}/articulo.aspx?id=${externalId}`, {
         waitUntil: 'networkidle',
         timeout: 20000,
       });
 
-      // Wait for price element to appear (smart wait instead of hardcoded 1.5s)
       await page.waitForSelector('div.col-12.tg-body-f18, [id*="lblStock"], #divArticuloDescripcion', {
         timeout: 5000,
-      }).catch(() => {}); // Element might not exist — that's ok
+      }).catch(() => {});
 
       const result: EnrichedProductData = {};
 
-      // Scrape all data from the rendered DOM
-      // NOTE: no inner functions — Playwright's transpiler generates __name refs that break
       const scraped = await page.evaluate(() => {
         const data: Record<string, any> = {};
 
-        // USD price: div.col-12.tg-body-f18 → "U$D 169,37"
+        // USD price
         const usdEl = document.querySelector('div.col-12.tg-body-f18');
         if (usdEl) {
           data.priceRaw = usdEl.textContent?.trim() || '';
         } else {
-          // Fallback: look for any element with price text
           const priceText = document.body.innerText.match(/U\$D\s*[\d.,]+/);
-          if (priceText) {
-            console.log('[Playwright] Fallback price found:', priceText[0]);
-            data.priceRaw = priceText[0];
-          }
+          if (priceText) data.priceRaw = priceText[0];
         }
 
-        // ARS price: div.col-12.tg-body-f10.pt-0 → "$ 255.748,70"
+        // ARS price
         const arsEls = document.querySelectorAll('div.col-12.tg-body-f10');
         Array.from(arsEls).some((el) => {
           const text = el.textContent?.trim() || '';
           if (text.startsWith('$') && !text.includes('U$D')) {
             data.priceWithIvaRaw = text;
-            return true; // break
+            return true;
           }
           return false;
         });
@@ -226,11 +241,10 @@ export class PlaywrightEnricher {
           data.stock = stockMatch ? parseInt(stockMatch[1], 10) : 0;
         }
 
-        // Images — main image + thumbnails (deduplicated, normalized)
+        // Images
         const imageSet = new Set<string>();
         const images: string[] = [];
 
-        // Main image: img#artImg src="imagenes/000029481.PNG"
         const mainImg = document.getElementById('artImg') as HTMLImageElement | null;
         if (mainImg && mainImg.src && mainImg.src.includes('imagenes/')) {
           const mainSrc = mainImg.src.replace(/^https?:\/\/[^/]+/, '').replace(/^\/+/, '');
@@ -241,7 +255,6 @@ export class PlaywrightEnricher {
           }
         }
 
-        // Thumbnails: div.tg-img-overlay.artImg data-src="imagenes/..."
         const artImgs = document.querySelectorAll('div.tg-img-overlay.artImg');
         artImgs.forEach((el) => {
           const src = el.getAttribute('data-src');
@@ -256,17 +269,14 @@ export class PlaywrightEnricher {
         });
 
         data.imageUrls = images.slice(0, 10);
-
         return data;
       });
 
-      // Parse USD price: "U$D 169,37" → "169,37"
+      // Parse prices
       if (scraped.priceRaw) {
         const usdMatch = scraped.priceRaw.match(/U\$D\s+([\d.,]+)/);
         result.priceRaw = usdMatch ? usdMatch[1] : scraped.priceRaw;
       }
-
-      // Parse ARS price: "$ 255.748,70" → "255.748,70"
       if (scraped.priceWithIvaRaw) {
         const arsMatch = scraped.priceWithIvaRaw.match(/\$\s*([\d.,]+)/);
         result.priceWithIvaRaw = arsMatch ? arsMatch[1] : scraped.priceWithIvaRaw;
@@ -278,13 +288,9 @@ export class PlaywrightEnricher {
       result.imageUrls = scraped.imageUrls;
 
       console.log(
-        `[Playwright] ${externalId}: enriched ` +
+        `[PlaywrightSingleton] ${externalId}: enriched ` +
         `| price=${result.priceRaw ?? 'N/A'} USD` +
-        `${result.priceWithIvaRaw ? ` / $${result.priceWithIvaRaw} ARS` : ''}` +
-        ` | desc=${result.description?.length ?? 0}ch` +
-        ` | sku=${result.sku ?? 'N/A'}` +
-        ` | stock=${result.stock ?? 'N/A'}` +
-        ` | images=${result.imageUrls?.length ?? 0}`
+        ` | desc=${result.description?.length ?? 0}ch`
       );
 
       return result;
@@ -294,25 +300,13 @@ export class PlaywrightEnricher {
   }
 
   /**
-   * Extract prices from a rendered listing page.
-   *
-   * The supplier site renders prices via JavaScript, so HTTP-only scraping
-   * can't see them. This method navigates to the listing page with Playwright,
-   * waits for rendering, and extracts the U$D price from each product link.
-   *
-   * This is the SAME logic used by playwright-listing — reliable because the
-   * price is directly in the link text ("U$D 76,21"), no fragile selectors.
+   * Extract prices from a listing page.
    */
-  async extractListingPrices(
-    idsubrubro1: number,
-    pageNum: number,
-  ): Promise<Map<string, string>> {
-    if (!this.context) throw new Error('Browser not launched');
-    const url = this.baseUrl;
-    if (!url) throw new Error('baseUrl required — call initSession first');
-
+  async extractListingPrices(idsubrubro1: number, pageNum: number): Promise<Map<string, string>> {
     const prices = new Map<string, string>();
-    const page = await this.context.newPage();
+    const url = this.baseUrl;
+
+    const page = await this.newPage();
     try {
       await page.goto(`${url}/buscar.aspx?idsubrubro1=${idsubrubro1}&pag=${pageNum}&conIva=1`, {
         waitUntil: 'networkidle',
@@ -344,25 +338,13 @@ export class PlaywrightEnricher {
         prices.set(item.externalId, item.priceRaw);
       }
 
-      console.log(
-        `[Playwright] Listing prices extracted: page ${pageNum}, ${prices.size} prices`
-      );
+      console.log(`[PlaywrightSingleton] Listing prices page ${pageNum}: ${prices.size} extracted`);
     } finally {
       await page.close();
     }
 
     return prices;
   }
-
-  /**
-   * Close the browser and clean up resources.
-   */
-  async close(): Promise<void> {
-    if (this.browser) {
-      await this.browser.close();
-      this.browser = null;
-      this.context = null;
-      this.initialized = false;
-    }
-  }
 }
+
+export const playwrightSingleton = PlaywrightSingleton.getInstance();

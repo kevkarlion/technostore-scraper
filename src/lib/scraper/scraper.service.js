@@ -55,7 +55,7 @@ const config_1 = require("./config");
 const image_downloader_1 = require("./image-downloader");
 const types_1 = require("./types");
 const http_client_1 = require("./http-client");
-const playwright_enricher_1 = require("./playwright-enricher");
+const playwright_singleton_1 = require("./playwright-singleton");
 // ============================================================================
 // SLUG GENERATION UTILITIES
 // ============================================================================
@@ -437,25 +437,25 @@ class ScraperService {
         const updatedIds = [];
         const errors = [];
         const categoryExternalIds = {};
-        let playwrightEnricher = null;
+        let playwrightReady = false;
         try {
             // Login first (skip if using a pre-authenticated shared session)
             if (!this.request.skipLogin) {
                 await this.login();
             }
-            // Initialize Playwright for full product enrichment (prices, desc, SKU, images)
+            // Initialize Playwright singleton for product enrichment
             try {
-                playwrightEnricher = new playwright_enricher_1.PlaywrightEnricher();
-                await playwrightEnricher.launch();
-                await playwrightEnricher.initSession(this.config.baseUrl, {
+                await playwright_singleton_1.playwrightSingleton.launch();
+                await playwright_singleton_1.playwrightSingleton.initSession(this.config.baseUrl, {
                     email: this.config.email,
                     password: this.config.password,
                 });
-                console.log('[Scraper] Playwright launched and session initialized');
+                playwrightReady = true;
+                console.log('[Scraper] Playwright singleton ready');
             }
             catch (e) {
                 console.error('[Scraper] Failed to launch Playwright:', e.message);
-                playwrightEnricher = null;
+                playwrightReady = false;
             }
             // Process each category
             for (const cat of this.categories) {
@@ -473,11 +473,11 @@ class ScraperService {
                     // This is the SAME logic as playwright-listing — prices come from the
                     // rendered listing text ("U$D 76,21"), not from fragile detail page selectors.
                     const listingPrices = new Map();
-                    if (playwrightEnricher && productsToEnrich.length > 0) {
+                    if (playwrightReady && productsToEnrich.length > 0) {
                         try {
                             const maxPages = 20;
                             for (let pageNum = 1; pageNum <= maxPages; pageNum++) {
-                                const pagePrices = await playwrightEnricher.extractListingPrices(cat.idsubrubro1, pageNum);
+                                const pagePrices = await playwright_singleton_1.playwrightSingleton.extractListingPrices(cat.idsubrubro1, pageNum);
                                 if (pagePrices.size === 0)
                                     break;
                                 for (const [id, price] of pagePrices) {
@@ -492,11 +492,11 @@ class ScraperService {
                     }
                     // Step 2: Enrich new products — detail page for desc/SKU/stock/images,
                     // listing price for costPrice (reliable source)
-                    if (playwrightEnricher && productsToEnrich.length > 0) {
+                    if (playwrightReady && productsToEnrich.length > 0) {
                         for (let i = 0; i < productsToEnrich.length; i += ENRICHMENT_CONCURRENCY) {
                             const batch = productsToEnrich.slice(i, i + ENRICHMENT_CONCURRENCY);
                             const results = await Promise.allSettled(batch.map(async (product) => {
-                                const enriched = await playwrightEnricher.enrichProduct(product.externalId, this.config.baseUrl);
+                                const enriched = await playwright_singleton_1.playwrightSingleton.enrichProduct(product.externalId, this.config.baseUrl);
                                 // Price from listing page (reliable) — NOT from detail page
                                 const listingPrice = listingPrices.get(product.externalId);
                                 if (listingPrice) {
@@ -633,7 +633,10 @@ class ScraperService {
             console.error('[Scraper] Fatal error:', e);
         }
         finally {
-            await playwrightEnricher?.close();
+            // Close Playwright singleton (will be reused across runs if needed)
+            if (playwrightReady) {
+                await playwright_singleton_1.playwrightSingleton.close();
+            }
         }
         return {
             success: errors.length === 0 || !errors.some((e) => e.startsWith('Fatal')),
