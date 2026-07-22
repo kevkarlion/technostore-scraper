@@ -242,40 +242,18 @@ async function runPostExecutionHooks(executionId) {
 // ===============================================
 // SCRAPER MUTEX — evita solapamiento entre runs
 // ===============================================
-/**
- * Maximum time (ms) the lock can be held before auto-releasing.
- * Protects against stuck locks after OOM kills, crashes, or unhandled exceptions.
- * Set to 30 minutes — a full scrape should never exceed this.
- */
-const SCRAPER_LOCK_TTL_MS = 30 * 60 * 1000;
 let scraperRunning = false;
-let scraperLockAcquiredAt = null;
 /**
  * Marca el scraper como "en ejecución" y devuelve handle para liberar.
- * Si ya está corriendo pero el lock lleva más de TTL, lo libera automáticamente
- * (protege contra crashes que no ejecutaron el finally).
- * Si el lock es reciente, lanza 409.
+ * Si ya está corriendo, lanza 409.
  */
 function tryAcquireScraper() {
-    if (scraperRunning && scraperLockAcquiredAt) {
-        const elapsed = Date.now() - scraperLockAcquiredAt;
-        if (elapsed > SCRAPER_LOCK_TTL_MS) {
-            console.warn(`[Mutex] Lock stale (${(elapsed / 60000).toFixed(1)}min old) — auto-releasing`);
-            scraperRunning = false;
-            scraperLockAcquiredAt = null;
-        }
-        else {
-            throw Object.assign(new Error('Scraper is already running'), { statusCode: 409 });
-        }
+    if (scraperRunning) {
+        throw Object.assign(new Error('Scraper is already running'), { statusCode: 409 });
     }
     scraperRunning = true;
-    scraperLockAcquiredAt = Date.now();
     console.log('[Mutex] Lock acquired');
-    return () => {
-        scraperRunning = false;
-        scraperLockAcquiredAt = null;
-        console.log('[Mutex] Lock released');
-    };
+    return () => { scraperRunning = false; console.log('[Mutex] Lock released'); };
 }
 const app = (0, express_1.default)();
 const PORT = process.env.PORT || 3001;
@@ -547,26 +525,4 @@ app.post('/debug/check-products', async (req, res) => {
 });
 app.listen(PORT, () => {
     console.log('[Server] Scraper server on port', PORT);
-});
-// Debug: check chromium processes
-app.get('/debug/processes', async (_req, res) => {
-    const fs = require('fs');
-    const path = require('path');
-    try {
-        const procs = fs.readdirSync('/proc').filter(p => /^\d+$/.test(p));
-        const chromium = [];
-        for (const pid of procs.slice(0, 200)) { // limit check
-            try {
-                const cmdline = fs.readFileSync(path.join('/proc', pid, 'cmdline'), 'utf8');
-                if (cmdline.includes('chromium') || cmdline.includes('playwright') || cmdline.includes('chrome')) {
-                    chromium.push(`PID ${pid}: ${cmdline.replace(/\0/g, ' ').slice(0, 100)}`);
-                }
-            }
-            catch (e) { }
-        }
-        res.json({ count: chromium.length, processes: chromium });
-    }
-    catch (error) {
-        res.status(500).json({ error: String(error) });
-    }
 });

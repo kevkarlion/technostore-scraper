@@ -94,7 +94,7 @@ async function getDb(): Promise<any> {
 // PRODUCT REPOSITORY — same as before
 // ============================================================================
 
-export const productRepository = {
+const productRepository = {
   async upsert(product: any) {
     const db = await getDb();
     const collection = db.collection('products');

@@ -48,7 +48,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.ScraperService = exports.productRepository = void 0;
+exports.ScraperService = void 0;
 exports.runScraper = runScraper;
 const cheerio = __importStar(require("cheerio"));
 const config_1 = require("./config");
@@ -113,7 +113,7 @@ async function getDb() {
 // ============================================================================
 // PRODUCT REPOSITORY — same as before
 // ============================================================================
-exports.productRepository = {
+const productRepository = {
     async upsert(product) {
         const db = await getDb();
         const collection = db.collection('products');
@@ -136,8 +136,6 @@ exports.productRepository = {
             const searchName = normalizeText(product.name);
             await collection.insertOne({
                 ...product,
-                price: product.costPrice || 0,
-                profitMargin: 0,
                 slug,
                 searchName,
                 supplier: 'jotakp',
@@ -163,8 +161,6 @@ exports.productRepository = {
             const searchName = normalizeText(product.name);
             await collection.insertOne({
                 ...product,
-                price: product.costPrice || 0,
-                profitMargin: 0,
                 slug,
                 searchName,
                 supplier: product.supplier || 'jotakp',
@@ -565,7 +561,7 @@ class ScraperService {
                                 `images=${upsertPayload.imageUrls?.length ?? 0}` +
                                 `${upsertPayload.sku ? `, sku=${upsertPayload.sku}` : ''}` +
                                 `${upsertPayload.stock ? `, stock=${upsertPayload.stock}` : ''}`);
-                            const result = await exports.productRepository.atomicUpsertByExternalId(upsertPayload);
+                            const result = await productRepository.atomicUpsertByExternalId(upsertPayload);
                             if (result.created) {
                                 created++;
                                 createdIds.push(product.externalId);
@@ -602,7 +598,7 @@ class ScraperService {
                     }
                     // Mark discontinued
                     if (externalIds.length > 0) {
-                        const discontinued = await exports.productRepository.markDiscontinued(cat.id, externalIds);
+                        const discontinued = await productRepository.markDiscontinued(cat.id, externalIds);
                         if (discontinued > 0) {
                             console.log(`[Scraper] Marked ${discontinued} products as discontinued in ${cat.id}`);
                         }
