@@ -197,10 +197,6 @@ export async function preCheckCategories(categoryFilter?: string[]): Promise<{
                 firstPriceUsd: preview.firstPriceUsd,
                 capturedAt: new Date(),
               },
-              // Initialize productIds only on first insert
-              $setOnInsert: {
-                productIds: preview.productIds,
-              },
             },
             { upsert: true },
           );
