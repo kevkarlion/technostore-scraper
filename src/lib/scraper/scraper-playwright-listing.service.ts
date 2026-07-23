@@ -683,14 +683,14 @@ export class ScraperPlaywrightListingService {
                   }
 
                   if (price === 0) {
-                    console.log(`[WARNING] ${enriched.externalId}: No price from detail page, skipping product`);
+                    console.log(`[WARNING] ${product.externalId}: No price from detail page, skipping product`);
                     return { created: false, updated: false, changes: [] };
                   }
 
                   // Upsert to DB
-                  console.log(`[Upsert] ${enriched.externalId}: costPrice=${price}, name=${enriched.name?.slice(0, 30)}`);
+                  console.log(`[Upsert] ${product.externalId}: costPrice=${price}, name=${product.name.slice(0, 30)}`);
                   const upsertResult = await this.upsertProduct({
-                    externalId: enriched.externalId,
+                    externalId: product.externalId,
                     name: enriched.name,
                     description: enriched.description,
                     costPrice: price,

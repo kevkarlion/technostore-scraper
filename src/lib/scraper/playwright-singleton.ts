@@ -211,7 +211,7 @@ class PlaywrightSingleton {
     try {
       await page.goto(`${url}/articulo.aspx?id=${externalId}`, {
         waitUntil: 'networkidle',
-        timeout: 20000,
+        timeout: 45000,
       });
 
       await page.waitForSelector('div.col-12.tg-body-f18, [id*="lblStock"], #divArticuloDescripcion', {

@@ -16,6 +16,7 @@ class PlaywrightSingleton {
         this.initialized = false;
         this.baseUrl = '';
         this.launchPromise = null;
+        this.initPromise = null;
     }
     static getInstance() {
         if (!PlaywrightSingleton.instance) {
@@ -63,6 +64,20 @@ class PlaywrightSingleton {
         console.log('[PlaywrightSingleton] Browser launched successfully');
     }
     async initSession(baseUrl, credentials) {
+        // Already initialized - wait for the existing promise
+        if (this.initialized && this.context) {
+            return;
+        }
+        // Prevent concurrent initialization
+        if (this.initPromise) {
+            await this.initPromise;
+            return;
+        }
+        this.initPromise = this._doInitSession(baseUrl, credentials);
+        await this.initPromise;
+        this.initPromise = null;
+    }
+    async _doInitSession(baseUrl, credentials) {
         if (this.initialized || !this.context) {
             return;
         }

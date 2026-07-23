@@ -559,6 +559,7 @@ class ScraperPlaywrightListingService {
                     // Step 2: Compare prices with DB and identify what needs enrichment
                     const db = await getDb();
                     const productsCollection = db.collection('products');
+                    // Process ALL products - new AND existing (for price updates)
                     const productsToEnrich = [];
                     for (const product of listingProducts) {
                         const existing = await productsCollection.findOne({
@@ -567,11 +568,14 @@ class ScraperPlaywrightListingService {
                         });
                         if (!existing) {
                             // New product → needs full enrichment
-                            productsToEnrich.push({ product, reason: 'new' });
+                            productsToEnrich.push({ product, existing: null, reason: 'new' });
                         }
-                        // Existing products are SKIPPED - incremental never updates
+                        else {
+                            // Existing product → needs enrichment for price updates
+                            productsToEnrich.push({ product, existing, reason: 'existing' });
+                        }
                     }
-                    console.log(`[Scraper] ${productsToEnrich.length} products need enrichment (new only, existing skipped)`);
+                    console.log(`[Scraper] ${productsToEnrich.length} products to process (new: ${productsToEnrich.filter(p => p.reason === 'new').length}, existing: ${productsToEnrich.filter(p => p.reason === 'existing').length})`);
                     // Step 4: Playwright detail → enrich products that need it
                     const ENRICHMENT_CONCURRENCY = 3;
                     let enrichedCount = 0;
