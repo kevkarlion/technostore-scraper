@@ -209,7 +209,7 @@ class PlaywrightSingleton {
 
     const page = await this.newPage();
     try {
-      await page.goto(`${url}/articulo.aspx?id=${externalId}`, {
+      await page.goto(`${url}/articulo.aspx?id=${externalId}?conIva=1`, {
         waitUntil: 'networkidle',
         timeout: 45000,
       });

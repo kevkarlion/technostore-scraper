@@ -171,9 +171,9 @@ class PlaywrightSingleton {
         }
         const page = await this.newPage();
         try {
-            await page.goto(`${url}/articulo.aspx?id=${externalId}`, {
+            await page.goto(`${url}/articulo.aspx?id=${externalId}?conIva=1`, {
                 waitUntil: 'networkidle',
-                timeout: 20000,
+                timeout: 45000,
             });
             await page.waitForSelector('div.col-12.tg-body-f18, [id*="lblStock"], #divArticuloDescripcion', {
                 timeout: 5000,

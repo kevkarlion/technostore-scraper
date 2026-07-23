@@ -3,15 +3,16 @@
  *
  * Flow:
  *   1. HTTP listing → discover product IDs (new, existing, discontinued)
- *   2. Playwright listing → render pages to extract prices for ALL products
- *   3. Compare prices with DB → detect price changes
- *   4. Playwright detail → for new products AND products with price changes
- *   5. Upsert → don't overwrite valid data with defaults
+ *   2. Playwright listing → render pages to extract prices for ALL products (conIva=1)
+ *   3. Compare listing prices with DB → update only costPrice (and price if default)
+ *   4. Playwright detail → ONLY for new products (description, images, SKU, stock)
+ *   5. Mark discontinued products
  *
  * Benefits:
- *   - Detects price changes for existing products
+ *   - Listing page is source of truth for prices (with conIva=1)
+ *   - Detail page only visited for new products (reduces page loads)
+ *   - Price updates are lightweight — only costPrice is changed
  *   - Doesn't overwrite valid data with empty defaults
- *   - Only visits detail pages when necessary
  */
 
 import * as cheerio from 'cheerio';
@@ -39,6 +40,11 @@ function generateProductSlug(name: string): string {
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
     .replace(/-+/g, '-');
+}
+
+function parseListingPrice(priceStr: string): number {
+  let cleaned = priceStr.replace(/\./g, '').replace(',', '.');
+  return parseFloat(cleaned) || 0;
 }
 
 function normalizeText(text: string): string {
@@ -256,7 +262,7 @@ class PlaywrightListingEnricher {
 
     const page = await this.context.newPage();
     try {
-      await page.goto(`${this.baseUrl}/articulo.aspx?id=${externalId}`, {
+      await page.goto(`${this.baseUrl}/articulo.aspx?id=${externalId}?conIva=1`, {
         waitUntil: 'networkidle',
         timeout: 20000,
       });
@@ -586,6 +592,38 @@ export class ScraperPlaywrightListingService {
   }
 
   // ============================================================================
+  // PRICE-ONLY UPDATE (lightweight — no detail page visit)
+  // ============================================================================
+
+  async updatePriceOnly(
+    externalId: string,
+    newCostPrice: number,
+    existing: any,
+  ): Promise<{ updated: boolean; priceAlsoUpdated: boolean }> {
+    const db = await getDb();
+    const collection = db.collection('products');
+    const now = new Date();
+
+    const updateOps: any = {
+      costPrice: newCostPrice,
+      lastSyncedAt: now,
+      updatedAt: now,
+    };
+
+    let priceAlsoUpdated = false;
+    if (existing.price === 0 || existing.price === existing.costPrice) {
+      updateOps.price = newCostPrice;
+      priceAlsoUpdated = true;
+    }
+
+    await collection.updateOne(
+      { _id: existing._id },
+      { $set: updateOps },
+    );
+    return { updated: true, priceAlsoUpdated };
+  }
+
+  // ============================================================================
   // MAIN RUN
   // ============================================================================
 
@@ -628,12 +666,27 @@ export class ScraperPlaywrightListingService {
           const { products: listingProducts, externalIds } = await this.scrapeCategoryIds(cat.idsubrubro1);
           console.log(`[Scraper] Category ${cat.id}: ${listingProducts.length} products found`);
 
-          // Step 2: Compare prices with DB and identify what needs enrichment
+          // Step 2: Collect listing prices via Playwright (with conIva=1)
+          const listingPrices = new Map<string, string>();
+          if (playwrightReady) {
+            const maxPages = 20;
+            for (let pageNum = 1; pageNum <= maxPages; pageNum++) {
+              const pagePrices = await playwrightSingleton.extractListingPrices(cat.idsubrubro1, pageNum);
+              if (pagePrices.size === 0) break;
+              for (const [id, price] of pagePrices) {
+                listingPrices.set(id, price);
+              }
+            }
+            console.log(`[Scraper] Category ${cat.id}: collected ${listingPrices.size} listing prices`);
+          }
+
+          // Step 3: Query DB for all products in this category
           const db = await getDb();
           const productsCollection = db.collection('products');
 
-          // Process ALL products - new AND existing (for price updates)
-          const productsToEnrich: Array<{ product: ListingProduct; existing: any; reason: 'new' | 'existing' }> = [];
+          const productsToEnrich: Array<{ product: ListingProduct; existing: any }> = [];
+          let priceUpdates = 0;
+          let priceSkipped = 0;
 
           for (const product of listingProducts) {
             const existing = await productsCollection.findOne({
@@ -642,17 +695,34 @@ export class ScraperPlaywrightListingService {
             });
 
             if (!existing) {
-              // New product → needs full enrichment
-              productsToEnrich.push({ product, existing: null, reason: 'new' });
+              // New product → needs full enrichment from detail page
+              productsToEnrich.push({ product, existing: null });
             } else {
-              // Existing product → needs enrichment for price updates
-              productsToEnrich.push({ product, existing, reason: 'existing' });
+              // Existing product → compare listing price with DB
+              const listingPriceStr = listingPrices.get(product.externalId);
+              if (listingPriceStr) {
+                const newCostPrice = parseListingPrice(listingPriceStr);
+                if (newCostPrice > 0 && newCostPrice !== existing.costPrice) {
+                  const oldCostPrice = existing.costPrice;
+                  const result = await this.updatePriceOnly(product.externalId, newCostPrice, existing);
+                  const extra = result.priceAlsoUpdated ? ' (+ price field)' : '';
+                  console.log(`[PriceUpdate] ${product.externalId}: $${oldCostPrice} → $${newCostPrice}${extra}`);
+                  priceUpdates++;
+                  updated++;
+                  updatedIds.push(product.externalId);
+                } else {
+                  priceSkipped++;
+                }
+              } else {
+                console.log(`[WARNING] ${product.externalId}: no listing price found, skipping`);
+                priceSkipped++;
+              }
             }
           }
 
-          console.log(`[Scraper] ${productsToEnrich.length} products to process (new: ${productsToEnrich.filter(p => p.reason === 'new').length}, existing: ${productsToEnrich.filter(p => p.reason === 'existing').length})`);
+          console.log(`[Scraper] Category ${cat.id}: ${priceUpdates} price updates, ${priceSkipped} unchanged, ${productsToEnrich.length} new products`);
 
-          // Step 4: Playwright detail → enrich products that need it
+          // Step 4: Playwright detail → enrich only NEW products
           const ENRICHMENT_CONCURRENCY = 3;
           let enrichedCount = 0;
 
@@ -665,29 +735,31 @@ export class ScraperPlaywrightListingService {
                   enriched.name = product.name;
                   enriched.categories = [cat.id];
 
-                  // ALWAYS derive price from priceRaw from DETAIL PAGE (enricher)
-                  // NO fallback to listing - for new products we want data from detail page
+                  // For new products, prefer listing price if available (already has conIva=1)
                   let price = 0;
-                  if (enriched.priceRaw) {
+                  const listingPriceStr = listingPrices.get(product.externalId);
+                  if (listingPriceStr) {
+                    price = parseListingPrice(listingPriceStr);
+                  }
+
+                  // Fallback to detail page price
+                  if (price === 0 && enriched.priceRaw) {
                     let cleaned = enriched.priceRaw.replace(/[$€£¥₹]/g, '').replace(/\s/g, '').trim();
                     const lastDot = cleaned.lastIndexOf('.');
                     const lastComma = cleaned.lastIndexOf(',');
                     if (lastComma > lastDot) {
-                      // European: 1.234,56 → 1234.56
                       cleaned = cleaned.replace(/\./g, '').replace(',', '.');
                     } else {
-                      // US: 1,234.56 → remove commas
                       cleaned = cleaned.replace(/,/g, '');
                     }
                     price = parseFloat(cleaned) || 0;
                   }
 
                   if (price === 0) {
-                    console.log(`[WARNING] ${product.externalId}: No price from detail page, skipping product`);
+                    console.log(`[WARNING] ${product.externalId}: No price from listing or detail page, skipping`);
                     return { created: false, updated: false, changes: [] };
                   }
 
-                  // Upsert to DB
                   console.log(`[Upsert] ${product.externalId}: costPrice=${price}, name=${product.name.slice(0, 30)}`);
                   const upsertResult = await this.upsertProduct({
                     externalId: product.externalId,
@@ -702,6 +774,14 @@ export class ScraperPlaywrightListingService {
                     attributes: [],
                   });
 
+                  if (upsertResult.created) {
+                    created++;
+                    createdIds.push(product.externalId);
+                  } else if (upsertResult.updated) {
+                    updated++;
+                    updatedIds.push(product.externalId);
+                  }
+
                   return upsertResult;
                 })
               );
@@ -714,7 +794,7 @@ export class ScraperPlaywrightListingService {
             }
           }
 
-          console.log(`[Scraper] Category ${cat.id}: ${enrichedCount} products enriched`);
+          console.log(`[Scraper] Category ${cat.id}: ${enrichedCount} new products enriched`);
 
           // Step 5: Mark discontinued
           if (externalIds.length > 0) {
