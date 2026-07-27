@@ -31,6 +31,12 @@ class PlaywrightSingleton {
   private baseUrl = '';
   private launchPromise: Promise<void> | null = null;
   private initPromise: Promise<void> | null = null;
+  
+  // Failure tracking for auto-restart
+  private failureCount = 0;
+  private lastFailureTime = 0;
+  private readonly FAILURE_THRESHOLD = 3; // Restart after 3 consecutive failures
+  private readonly FAILURE_WINDOW_MS = 60000; // Within 1 minute
 
   private constructor() {}
 
@@ -192,6 +198,39 @@ class PlaywrightSingleton {
     }
   }
 
+  /**
+   * Track a failure and restart browser if threshold exceeded.
+   * Returns true if browser was restarted.
+   */
+  async checkAndRestart(): Promise<boolean> {
+    const now = Date.now();
+    
+    // Reset if more than 1 minute since last failure
+    if (now - this.lastFailureTime > this.FAILURE_WINDOW_MS) {
+      this.failureCount = 0;
+    }
+    
+    this.failureCount++;
+    this.lastFailureTime = now;
+    
+    if (this.failureCount >= this.FAILURE_THRESHOLD) {
+      console.log(`[PlaywrightSingleton] Too many failures (${this.failureCount}), restarting browser...`);
+      await this.close();
+      await this.launch();
+      this.failureCount = 0;
+      return true;
+    }
+    
+    return false;
+  }
+
+  /**
+   * Reset failure counter (call on success).
+   */
+  resetFailureCount(): void {
+    this.failureCount = 0;
+  }
+
   // ============================================================================
   // ENRICHMENT METHODS (delegated from PlaywrightEnricher)
   // ============================================================================
@@ -330,7 +369,13 @@ class PlaywrightSingleton {
         ` | desc=${result.description?.length ?? 0}ch`
       );
 
+      // Reset failure counter on success
+      this.resetFailureCount();
       return result;
+    } catch (error: any) {
+      // Track failure and try to restart browser
+      await this.checkAndRestart();
+      throw error;
     } finally {
       await page.close();
     }
@@ -384,6 +429,13 @@ class PlaywrightSingleton {
       }
 
       console.log(`[PlaywrightSingleton] Listing prices page ${pageNum}: ${prices.size} extracted`);
+      
+      // Reset failure counter on success
+      this.resetFailureCount();
+    } catch (error: any) {
+      // Track failure and try to restart browser
+      await this.checkAndRestart();
+      throw error;
     } finally {
       await page.close();
     }

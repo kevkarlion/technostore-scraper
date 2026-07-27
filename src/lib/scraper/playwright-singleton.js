@@ -17,6 +17,11 @@ class PlaywrightSingleton {
         this.baseUrl = '';
         this.launchPromise = null;
         this.initPromise = null;
+        // Failure tracking for auto-restart
+        this.failureCount = 0;
+        this.lastFailureTime = 0;
+        this.FAILURE_THRESHOLD = 3; // Restart after 3 consecutive failures
+        this.FAILURE_WINDOW_MS = 60000; // Within 1 minute
     }
     static getInstance() {
         if (!PlaywrightSingleton.instance) {
@@ -156,6 +161,33 @@ class PlaywrightSingleton {
             console.log('[PlaywrightSingleton] Browser closed');
         }
     }
+    /**
+     * Track a failure and restart browser if threshold exceeded.
+     * Returns true if browser was restarted.
+     */
+    async checkAndRestart() {
+        const now = Date.now();
+        // Reset if more than 1 minute since last failure
+        if (now - this.lastFailureTime > this.FAILURE_WINDOW_MS) {
+            this.failureCount = 0;
+        }
+        this.failureCount++;
+        this.lastFailureTime = now;
+        if (this.failureCount >= this.FAILURE_THRESHOLD) {
+            console.log(`[PlaywrightSingleton] Too many failures (${this.failureCount}), restarting browser...`);
+            await this.close();
+            await this.launch();
+            this.failureCount = 0;
+            return true;
+        }
+        return false;
+    }
+    /**
+     * Reset failure counter (call on success).
+     */
+    resetFailureCount() {
+        this.failureCount = 0;
+    }
     // ============================================================================
     // ENRICHMENT METHODS (delegated from PlaywrightEnricher)
     // ============================================================================
@@ -275,7 +307,14 @@ class PlaywrightSingleton {
             console.log(`[PlaywrightSingleton] ${externalId}: enriched ` +
                 `| price=${result.priceRaw ?? 'N/A'} USD` +
                 ` | desc=${result.description?.length ?? 0}ch`);
+            // Reset failure counter on success
+            this.resetFailureCount();
             return result;
+        }
+        catch (error) {
+            // Track failure and try to restart browser
+            await this.checkAndRestart();
+            throw error;
         }
         finally {
             await page.close();
@@ -320,6 +359,13 @@ class PlaywrightSingleton {
                 prices.set(item.externalId, item.priceRaw);
             }
             console.log(`[PlaywrightSingleton] Listing prices page ${pageNum}: ${prices.size} extracted`);
+            // Reset failure counter on success
+            this.resetFailureCount();
+        }
+        catch (error) {
+            // Track failure and try to restart browser
+            await this.checkAndRestart();
+            throw error;
         }
         finally {
             await page.close();
