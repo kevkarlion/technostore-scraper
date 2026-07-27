@@ -22,7 +22,7 @@ import { getScraperConfig, jotakpCategories } from './config';
 import { createHttpClient, safeGet, delay } from './http-client';
 import type { ScraperConfig, ScraperResult, ScraperRunRequest, ScraperCategory } from './types';
 import { ScraperError } from './types';
-import { playwrightSingleton } from './playwright-singleton';
+import { playwrightSingletonListing } from './playwright-singleton-listing';
 
 // Configure Playwright to use the browsers installed in user's cache
 const PLAYWRIGHT_BROWSERS_PATH = process.env.PLAYWRIGHT_BROWSERS_PATH || '/home/kriq/.cache/ms-playwright';
@@ -645,8 +645,8 @@ export class ScraperPlaywrightListingService {
 
       // Initialize Playwright singleton
       try {
-        await playwrightSingleton.launch();
-        await playwrightSingleton.initSession(this.config.baseUrl, {
+        await playwrightSingletonListing.launch();
+        await playwrightSingletonListing.initSession(this.config.baseUrl, {
           email: this.config.email,
           password: this.config.password,
         });
@@ -671,7 +671,7 @@ export class ScraperPlaywrightListingService {
           if (playwrightReady) {
             const maxPages = 20;
             for (let pageNum = 1; pageNum <= maxPages; pageNum++) {
-              const pagePrices = await playwrightSingleton.extractListingPrices(cat.idsubrubro1, pageNum);
+              const pagePrices = await playwrightSingletonListing.extractListingPrices(cat.idsubrubro1, pageNum);
               if (pagePrices.size === 0) break;
               for (const [id, price] of pagePrices) {
                 listingPrices.set(id, price);
@@ -731,7 +731,7 @@ export class ScraperPlaywrightListingService {
               const batch = productsToEnrich.slice(i, i + ENRICHMENT_CONCURRENCY);
               const results = await Promise.allSettled(
                 batch.map(async ({ product }) => {
-                  const enriched = await playwrightSingleton.enrichProduct(product.externalId);
+                  const enriched = await playwrightSingletonListing.enrichProduct(product.externalId);
                   enriched.name = product.name;
                   enriched.categories = [cat.id];
 
@@ -824,7 +824,7 @@ export class ScraperPlaywrightListingService {
     } finally {
       // Close Playwright singleton
       if (playwrightReady) {
-        await playwrightSingleton.close();
+        await playwrightSingletonListing.close();
       }
     }
 
