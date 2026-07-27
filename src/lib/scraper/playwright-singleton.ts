@@ -353,10 +353,10 @@ class PlaywrightSingleton {
       await page.waitForSelector('a[href*="articulo.aspx?id="]', { timeout: 10000 }).catch(() => {});
 
       // Wait for prices to render (JS-rendered content needs extra time)
-      await page.waitForTimeout(2000);
+      await page.waitForTimeout(3000);
 
       const extracted = await page.evaluate(() => {
-        const results: Array<{ externalId: string; priceRaw: string }> = [];
+        const results: Array<{ externalId: string; priceRaw: string; fullText: string }> = [];
         const links = document.querySelectorAll('a[href*="articulo.aspx?id="]');
 
         links.forEach((link) => {
@@ -365,9 +365,14 @@ class PlaywrightSingleton {
           if (!idMatch) return;
 
           const text = link.textContent?.trim() || '';
+          // Debug: log what we're seeing
+          if (text.includes('Comprar USD') || text.includes('U$D')) {
+            console.log('[DEBUG] Found link text:', text.substring(0, 100));
+          }
+          
           const priceMatch = text.match(/U\$D\s+([\d.,]+)/);
           if (priceMatch) {
-            results.push({ externalId: idMatch[1], priceRaw: priceMatch[1] });
+            results.push({ externalId: idMatch[1], priceRaw: priceMatch[1], fullText: text });
           }
         });
 

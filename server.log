@@ -1,4 +1,3 @@
-[Scraper] Initialized PLAYWRIGHT_BROWSERS_PATH: /tmp/ms-playwright
 [Config] SUPPLIER_URL: https://jotakp.dyndns.org
 [Config] SUPPLIER_EMAIL: 20418216795
 [Config] Selectors: {
@@ -7,3 +6,163 @@
   submitButtonSelector: '#ContentPlaceHolder1_btnIngresar, #btnIngresar'
 }
 [Server] Scraper server on port 3001
+[Mongo] Connected with pool (max: 5, min: 0)
+[Monitoring] Indexes created. Collections: execution_logs, health_checks, metrics_snapshots
+[Monitoring] API router built — ready at /api/monitoring
+[Monitoring] Initialized
+[Mutex] Lock acquired
+[Incremental] Starting incremental scraper...
+[Incremental] Filtering to subcategory "microprocesadores" — 1 categories
+[Scraper] Logging in...
+[Scraper] Login successful
+[Incremental] Shared session established for all categories
+[Incremental] Captured old product IDs for 1 categories
+[Incremental] Pre-checking 1 categories...
+[Incremental] Batch 1: Microprocesadores
+[Pre-check] Page 1: 25 products, total so far: 25
+[Pre-check] Category 6: 25 total products
+[Pre-check] microprocesadores: CHANGED | new=19, discontinued=0, total=25 products
+[Pre-check]   NEW products: 15282, 15965, 16788, 17763, 18273...
+[Incremental] Pre-check complete: 1 changed, 0 unchanged, 0 errors
+[Incremental] microprocesadores: 6 known products from previous scrape — Playwright will skip these
+[Incremental] Pre-check: 1 changed, 0 unchanged, 0 errors — scraping 1 categories
+[Incremental] Scraping batch 1: microprocesadores
+[PlaywrightSingleton] Launching browser: /home/kriq/.cache/ms-playwright/chromium-1228/chrome-linux64/chrome
+[PlaywrightSingleton] Browser launched successfully
+[PlaywrightSingleton] Login submitted
+[PlaywrightSingleton] Session initialized: login OK, branch Cipolletti selected
+[Scraper] Playwright singleton ready
+[Scraper] Processing category: microprocesadores (6)
+[Scraper] Page 1: 25 products extracted (more pages)
+[Scraper] Page 2: 0 products extracted (last page)
+[PlaywrightSingleton] Listing prices page 1: 25 extracted
+[PlaywrightSingleton] Listing prices page 2: 0 extracted
+[Playwright] microprocesadores: 25 listing prices extracted (with conIva=1)
+[DEBUG] enrichProduct URL: https://jotakp.dyndns.org/articulo.aspx?id=15282&conIva=1
+[DEBUG] enrichProduct URL: https://jotakp.dyndns.org/articulo.aspx?id=15965&conIva=1
+[DEBUG] enrichProduct URL: https://jotakp.dyndns.org/articulo.aspx?id=16788&conIva=1
+[PlaywrightSingleton] 15282: enriched | price=103,63 USD | desc=15ch
+[PlaywrightSingleton] 16788: enriched | price=199,99 USD | desc=15ch
+[PlaywrightSingleton] 15965: enriched | price=431,03 USD | desc=15ch
+[DEBUG] enrichProduct URL: https://jotakp.dyndns.org/articulo.aspx?id=17763&conIva=1
+[DEBUG] enrichProduct URL: https://jotakp.dyndns.org/articulo.aspx?id=18273&conIva=1
+[DEBUG] enrichProduct URL: https://jotakp.dyndns.org/articulo.aspx?id=18514&conIva=1
+[PlaywrightSingleton] 17763: enriched | price=236,99 USD | desc=195ch
+[PlaywrightSingleton] 18273: enriched | price=186,35 USD | desc=15ch
+[PlaywrightSingleton] 18514: enriched | price=488,76 USD | desc=15ch
+[DEBUG] enrichProduct URL: https://jotakp.dyndns.org/articulo.aspx?id=18902&conIva=1
+[DEBUG] enrichProduct URL: https://jotakp.dyndns.org/articulo.aspx?id=19014&conIva=1
+[DEBUG] enrichProduct URL: https://jotakp.dyndns.org/articulo.aspx?id=19016&conIva=1
+[PlaywrightSingleton] 18902: enriched | price=282,70 USD | desc=15ch
+[PlaywrightSingleton] 19016: enriched | price=161,53 USD | desc=348ch
+[PlaywrightSingleton] 19014: enriched | price=201,65 USD | desc=357ch
+[DEBUG] enrichProduct URL: https://jotakp.dyndns.org/articulo.aspx?id=19017&conIva=1
+[DEBUG] enrichProduct URL: https://jotakp.dyndns.org/articulo.aspx?id=19031&conIva=1
+[DEBUG] enrichProduct URL: https://jotakp.dyndns.org/articulo.aspx?id=19240&conIva=1
+[PlaywrightSingleton] 19017: enriched | price=186,75 USD | desc=15ch
+[PlaywrightSingleton] 19240: enriched | price=106,98 USD | desc=15ch
+[PlaywrightSingleton] 19031: enriched | price=131,96 USD | desc=15ch
+[DEBUG] enrichProduct URL: https://jotakp.dyndns.org/articulo.aspx?id=19242&conIva=1
+[DEBUG] enrichProduct URL: https://jotakp.dyndns.org/articulo.aspx?id=21093&conIva=1
+[DEBUG] enrichProduct URL: https://jotakp.dyndns.org/articulo.aspx?id=22142&conIva=1
+[PlaywrightSingleton] 19242: enriched | price=277,26 USD | desc=15ch
+[PlaywrightSingleton] 22142: enriched | price=83,46 USD | desc=15ch
+[PlaywrightSingleton] 21093: enriched | price=221,15 USD | desc=15ch
+[DEBUG] enrichProduct URL: https://jotakp.dyndns.org/articulo.aspx?id=22272&conIva=1
+[DEBUG] enrichProduct URL: https://jotakp.dyndns.org/articulo.aspx?id=22283&conIva=1
+[DEBUG] enrichProduct URL: https://jotakp.dyndns.org/articulo.aspx?id=22453&conIva=1
+[PlaywrightSingleton] 22272: enriched | price=438,25 USD | desc=15ch
+[PlaywrightSingleton] 22283: enriched | price=229,41 USD | desc=15ch
+[PlaywrightSingleton] 22453: enriched | price=175,66 USD | desc=15ch
+[DEBUG] enrichProduct URL: https://jotakp.dyndns.org/articulo.aspx?id=22454&conIva=1
+[PlaywrightSingleton] 22454: enriched | price=490,19 USD | desc=15ch
+[Playwright] microprocesadores: 19 enriched (×3 parallel), 6 existing skipped | total=25 products found
+[Upsert] 15282: costPrice=103.63, images=1
+[Upsert] 15282: CREATED (slug: amd-ryzen-5-5500-3-6ghz-turbo-am4-c-cooler-sin-video)
+[Upsert] 15965: costPrice=431.03, images=1
+[Upsert] 15965: CREATED (slug: intel-core-i7-12700-2-10hz-25mb-bx8071512700-s1700)
+[Upsert] 16788: costPrice=199.99, images=1
+[Upsert] 16788: CREATED (slug: intel-core-i5-12400f-2-5hz-18mb-bx8071512400f-s1700-srl4w-sin-video)
+[Upsert] 17763: costPrice=236.99, images=2
+[Upsert] 17763: CREATED (slug: amd-ryzen-5-7600-5-1-ghz-am5)
+[Upsert] 18273: costPrice=186.35, images=1
+[Upsert] 18273: CREATED (slug: amd-ryzen-5-5600gt-4-6-ghz-con-graficos-am4)
+[Upsert] 18514: costPrice=488.76, images=1
+[Upsert] 18514: CREATED (slug: intel-corel-i7-14700-raptorlaje-r-s1700-bx8071514700-srn40-en-esquema)
+[Upsert] 18902: costPrice=282.7, images=1
+[Upsert] 18902: CREATED (slug: amd-ryzen-7-8700g-am5-c-vid-c-cool)
+[Upsert] 19014: costPrice=201.65, images=1
+[Upsert] 19014: CREATED (slug: amd-ryzen-5-8600g-4-30-ghz-am5-ddr5)
+[Upsert] 19016: costPrice=161.53, images=1
+[Upsert] 19016: CREATED (slug: amd-ryzen-5-8500g-3-50-ghz-am5-ddr5)
+[Upsert] 19017: costPrice=186.75, images=1
+[Upsert] 19017: CREATED (slug: amd-ryzen-5-8400f-4-7-ghz-am5-ddr5)
+[Upsert] 19031: costPrice=131.96, images=1
+[Upsert] 19031: CREATED (slug: intel-core-i3-14100f-3-5ghz-12mb-lga-1700-bx8071514100f-s-video)
+[Upsert] 19240: costPrice=106.98, images=1
+[Upsert] 19240: CREATED (slug: amd-ryzen-3-5300g-am4-c-cooler-4-2ghz-max-boost)
+[Upsert] 19242: costPrice=277.26, images=1
+[Upsert] 19242: CREATED (slug: intel-core-i5-14400-2-5ghz-20mb-lga1700-bx8071514400)
+[Upsert] 21093: costPrice=221.15, images=1
+[Upsert] 21093: CREATED (slug: intel-core-ultra-5-225f-4-2hz-22-lga-1851-srqd2)
+[Upsert] 22142: costPrice=83.46, images=1
+[Upsert] 22142: CREATED (slug: amd-ryzen-3-3200g-3-6-c-radeon-vega-8-am4-oem-cooler-gamemax-gamma-300)
+[Upsert] 22272: costPrice=438.25, images=1
+[Upsert] 22272: CREATED (slug: amd-ryzen-7-9700x-am5-sin-cooler)
+[Upsert] 22283: costPrice=229.41, images=1
+[Upsert] 22283: CREATED (slug: intel-core-i5-14400-2-5ghz-20mb-lga1700-oem-s-caja-ni-cooler)
+[Upsert] 22453: costPrice=175.66, images=0
+[Upsert] 22453: CREATED (slug: amd-ryzen-7-5700-3-7-ghz-sin-video-am4)
+[Upsert] 22454: costPrice=490.19, images=1
+[Upsert] 22454: CREATED (slug: procesador-intel-core-ultra-7-265-3-9-ghz-36mb-lga1851)
+[Scraper] microprocesadores: 25 products found | 19 created, 0 updated, 25 total IDs stored for next pre-check
+[PlaywrightSingleton] Browser closed
+[Incremental] Done in 47.3s: 19 created, 0 updated, 0 discontinued | scraped 1/1 categories
+[Incremental] Background run complete: 19 created, 0 updated
+[Mutex] Lock released
+[Mutex] Lock acquired
+[Incremental] Starting incremental scraper...
+[Incremental] Filtering to subcategory "mouse-gamer" — 1 categories
+[Scraper] Logging in...
+[Scraper] Login successful
+[Incremental] Shared session established for all categories
+[Incremental] Captured old product IDs for 1 categories
+[Incremental] Pre-checking 1 categories...
+[Incremental] Batch 1: Mouse Gamer
+[Pre-check] Page 1: 24 products, total so far: 24
+[Pre-check] Category 152: 24 total products
+[Pre-check] mouse-gamer: CHANGED | new=3, discontinued=0, total=24 products
+[Pre-check]   NEW products: 22006, 22007, 22222
+[Incremental] Pre-check complete: 1 changed, 0 unchanged, 0 errors
+[Incremental] mouse-gamer: 21 known products from previous scrape — Playwright will skip these
+[Incremental] Pre-check: 1 changed, 0 unchanged, 0 errors — scraping 1 categories
+[Incremental] Scraping batch 1: mouse-gamer
+[PlaywrightSingleton] Launching browser: /home/kriq/.cache/ms-playwright/chromium-1228/chrome-linux64/chrome
+[PlaywrightSingleton] Browser launched successfully
+[PlaywrightSingleton] Login submitted
+[PlaywrightSingleton] Session initialized: login OK, branch Cipolletti selected
+[Scraper] Playwright singleton ready
+[Scraper] Processing category: mouse-gamer (152)
+[Scraper] Page 1: 24 products extracted (more pages)
+[Scraper] Page 2: 0 products extracted (last page)
+[PlaywrightSingleton] Listing prices page 1: 24 extracted
+[PlaywrightSingleton] Listing prices page 2: 0 extracted
+[Playwright] mouse-gamer: 24 listing prices extracted (with conIva=1)
+[DEBUG] enrichProduct URL: https://jotakp.dyndns.org/articulo.aspx?id=22006&conIva=1
+[DEBUG] enrichProduct URL: https://jotakp.dyndns.org/articulo.aspx?id=22007&conIva=1
+[DEBUG] enrichProduct URL: https://jotakp.dyndns.org/articulo.aspx?id=22222&conIva=1
+[PlaywrightSingleton] 22006: enriched | price=20,18 USD | desc=15ch
+[PlaywrightSingleton] 22007: enriched | price=20,18 USD | desc=15ch
+[PlaywrightSingleton] 22222: enriched | price=29,65 USD | desc=15ch
+[Playwright] mouse-gamer: 3 enriched (×3 parallel), 21 existing skipped | total=24 products found
+[Upsert] 22006: costPrice=20.18, images=1
+[Upsert] 22006: CREATED (slug: mouse-gamer-nearlink-tri-mode-solarmax-gmw07b-negro-24105j)
+[Upsert] 22007: costPrice=20.18, images=1
+[Upsert] 22007: CREATED (slug: mouse-gamer-nearlink-tri-mode-solarmax-gmw07w-blanco-24112c)
+[Upsert] 22222: costPrice=29.65, images=1
+[Upsert] 22222: CREATED (slug: mouse-inalambrico-redragon-st4rpro-m917b-pro-celeste)
+[Scraper] mouse-gamer: 24 products found | 3 created, 0 updated, 24 total IDs stored for next pre-check
+[PlaywrightSingleton] Browser closed
+[Incremental] Done in 30.6s: 3 created, 0 updated, 0 discontinued | scraped 1/1 categories
+[Incremental] Background run complete: 3 created, 0 updated
+[Mutex] Lock released

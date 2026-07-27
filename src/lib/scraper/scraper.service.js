@@ -501,7 +501,7 @@ class ScraperService {
                                 }
                                 else {
                                     // No price from listing - skip this product and log warning
-                                    console.log(`[WARNING] ${product.externalId}: skipped - no price from listing`);
+                                    console.log(`[WARNING] ${product.externalId}: skipped - no price from listing (available: ${listingPrices.size} prices in cache)`);
                                     return; // Skip this product
                                 }
                                 // Other fields from detail page
@@ -533,6 +533,11 @@ class ScraperService {
                     for (const product of products) {
                         // Skip existing products in incremental mode - they were already saved
                         if (isIncremental && existingIds.has(product.externalId)) {
+                            continue;
+                        }
+                        // Skip products without price (incremental mode requires price from listing)
+                        if (isIncremental && !product.priceRaw) {
+                            console.log(`[WARNING] ${product.externalId}: skipped - no priceRaw at save time`);
                             continue;
                         }
                         try {

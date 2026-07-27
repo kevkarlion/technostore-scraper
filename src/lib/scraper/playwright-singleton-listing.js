@@ -1,15 +1,15 @@
 "use strict";
 /**
- * Playwright Singleton — shared browser instance across all scraper services.
+ * Playwright Singleton for Playwright-Listing Scraper.
  *
- * Railway has strict PID limits. Using a single browser instance instead of
- * launching multiple browsers reduces resource usage significantly.
+ * This is a SEPARATE implementation from the incremental scraper.
+ * Changes here should NOT affect the incremental scraper and vice versa.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.playwrightSingleton = void 0;
+exports.playwrightSingletonListing = void 0;
 const playwright_1 = require("playwright");
 const PLAYWRIGHT_BROWSERS_PATH = process.env.PLAYWRIGHT_BROWSERS_PATH || '/home/kriq/.cache/ms-playwright';
-class PlaywrightSingleton {
+class PlaywrightSingletonListing {
     constructor() {
         this.browser = null;
         this.context = null;
@@ -19,16 +19,14 @@ class PlaywrightSingleton {
         this.initPromise = null;
     }
     static getInstance() {
-        if (!PlaywrightSingleton.instance) {
-            PlaywrightSingleton.instance = new PlaywrightSingleton();
+        if (!PlaywrightSingletonListing.instance) {
+            PlaywrightSingletonListing.instance = new PlaywrightSingletonListing();
         }
-        return PlaywrightSingleton.instance;
+        return PlaywrightSingletonListing.instance;
     }
     async launch() {
-        // Already launched
         if (this.browser)
             return;
-        // Prevent concurrent launches
         if (this.launchPromise) {
             await this.launchPromise;
             return;
@@ -41,7 +39,7 @@ class PlaywrightSingleton {
         if (this.browser)
             return;
         const chromiumPath = `${PLAYWRIGHT_BROWSERS_PATH}/chromium-1228/chrome-linux64/chrome`;
-        console.log('[PlaywrightSingleton] Launching browser:', chromiumPath);
+        console.log('[PlaywrightSingletonListing] Launching browser:', chromiumPath);
         this.browser = await playwright_1.chromium.launch({
             headless: true,
             executablePath: chromiumPath,
@@ -56,19 +54,17 @@ class PlaywrightSingleton {
                 '--disable-default-apps',
                 '--disable-sync',
                 '--disable-translate',
-                '--single-process', // Reduce processes
-                '--js-flags=--max-old-space-size=256', // Limit JS heap
+                '--single-process',
+                '--js-flags=--max-old-space-size=256',
             ],
         });
         this.context = await this.browser.newContext();
-        console.log('[PlaywrightSingleton] Browser launched successfully');
+        console.log('[PlaywrightSingletonListing] Browser launched successfully');
     }
     async initSession(baseUrl, credentials) {
-        // Already initialized - wait for the existing promise
         if (this.initialized && this.context) {
             return;
         }
-        // Prevent concurrent initialization
         if (this.initPromise) {
             await this.initPromise;
             return;
@@ -84,7 +80,6 @@ class PlaywrightSingleton {
         this.baseUrl = baseUrl;
         const page = await this.context.newPage();
         try {
-            // Navigate to login page
             await page.goto(`${baseUrl}/loginext.aspx`, { waitUntil: 'networkidle', timeout: 20000 });
             if (credentials) {
                 await page.fill('#TxtEmail', credentials.email);
@@ -93,11 +88,9 @@ class PlaywrightSingleton {
                     page.waitForNavigation({ waitUntil: 'networkidle', timeout: 15000 }).catch(() => { }),
                     page.click('#BtnIngresar'),
                 ]);
-                console.log('[PlaywrightSingleton] Login submitted');
+                console.log('[PlaywrightSingletonListing] Login submitted');
             }
-            // Navigate to site to establish session
             await page.goto(baseUrl, { waitUntil: 'networkidle', timeout: 15000 });
-            // Select branch (Cipolletti, Id=1)
             const branchOk = await page.evaluate(async () => {
                 try {
                     if (typeof window.PageMethods !== 'undefined') {
@@ -126,10 +119,10 @@ class PlaywrightSingleton {
             });
             if (branchOk) {
                 this.initialized = true;
-                console.log('[PlaywrightSingleton] Session initialized: login OK, branch Cipolletti selected');
+                console.log('[PlaywrightSingletonListing] Session initialized: login OK, branch Cipolletti selected');
             }
             else {
-                console.error('[PlaywrightSingleton] Failed to select branch');
+                console.error('[PlaywrightSingletonListing] Failed to select branch');
             }
         }
         finally {
@@ -153,15 +146,9 @@ class PlaywrightSingleton {
             this.browser = null;
             this.context = null;
             this.initialized = false;
-            console.log('[PlaywrightSingleton] Browser closed');
+            console.log('[PlaywrightSingletonListing] Browser closed');
         }
     }
-    // ============================================================================
-    // ENRICHMENT METHODS (delegated from PlaywrightEnricher)
-    // ============================================================================
-    /**
-     * Enrich a product by navigating to its detail page.
-     */
     async enrichProduct(externalId, baseUrl) {
         const url = baseUrl || this.baseUrl;
         if (!url)
@@ -171,9 +158,7 @@ class PlaywrightSingleton {
         }
         const page = await this.newPage();
         try {
-            const fullUrl = `${url}/articulo.aspx?id=${externalId}&conIva=1`;
-            console.log('[DEBUG] enrichProduct URL:', fullUrl);
-            await page.goto(fullUrl, {
+            await page.goto(`${url}/articulo.aspx?id=${externalId}&conIva=1`, {
                 waitUntil: 'networkidle',
                 timeout: 45000,
             });
@@ -188,19 +173,17 @@ class PlaywrightSingleton {
                 const precioListaIndex = bodyText.indexOf('Precio de lista');
                 if (precioListaIndex > 0) {
                     const beforeText = bodyText.substring(0, precioListaIndex);
-                    // Find the last U$D price in this section (main product, not related)
                     const matches = beforeText.matchAll(/U.?D[^0-9]*([0-9.,]+)/g);
                     const lastMatch = Array.from(matches).pop();
                     if (lastMatch) {
                         data.priceRaw = 'U$D ' + lastMatch[1];
                     }
                 }
-                // Also try to find via selector only if no price found yet
+                // Also try selector
                 if (!data.priceRaw) {
                     const usdEls = document.querySelectorAll('div.col-12.tg-body-f18');
                     for (const el of Array.from(usdEls)) {
                         const text = el.textContent?.trim() || '';
-                        // Only use if it starts with U$D and has price (not "Comprar USD")
                         if (text.startsWith('U$D') && text.match(/[\d.,]+/) && !text.includes('Comprar')) {
                             data.priceRaw = text;
                             break;
@@ -259,7 +242,6 @@ class PlaywrightSingleton {
                 data.imageUrls = images.slice(0, 10);
                 return data;
             });
-            // Parse prices
             if (scraped.priceRaw) {
                 const usdMatch = scraped.priceRaw.match(/U\$D\s+([\d.,]+)/);
                 result.priceRaw = usdMatch ? usdMatch[1] : scraped.priceRaw;
@@ -272,7 +254,7 @@ class PlaywrightSingleton {
             result.sku = scraped.sku;
             result.stock = scraped.stock;
             result.imageUrls = scraped.imageUrls;
-            console.log(`[PlaywrightSingleton] ${externalId}: enriched ` +
+            console.log(`[PlaywrightSingletonListing] ${externalId}: enriched ` +
                 `| price=${result.priceRaw ?? 'N/A'} USD` +
                 ` | desc=${result.description?.length ?? 0}ch`);
             return result;
@@ -281,9 +263,6 @@ class PlaywrightSingleton {
             await page.close();
         }
     }
-    /**
-     * Extract prices from a listing page.
-     */
     async extractListingPrices(idsubrubro1, pageNum) {
         const prices = new Map();
         const url = this.baseUrl;
@@ -294,8 +273,7 @@ class PlaywrightSingleton {
                 timeout: 30000,
             });
             await page.waitForSelector('a[href*="articulo.aspx?id="]', { timeout: 10000 }).catch(() => { });
-            // Wait for prices to render (JS-rendered content needs extra time)
-            await page.waitForTimeout(3000);
+            await page.waitForTimeout(2000);
             const extracted = await page.evaluate(() => {
                 const results = [];
                 const links = document.querySelectorAll('a[href*="articulo.aspx?id="]');
@@ -305,13 +283,9 @@ class PlaywrightSingleton {
                     if (!idMatch)
                         return;
                     const text = link.textContent?.trim() || '';
-                    // Debug: log what we're seeing
-                    if (text.includes('Comprar USD') || text.includes('U$D')) {
-                        console.log('[DEBUG] Found link text:', text.substring(0, 100));
-                    }
                     const priceMatch = text.match(/U\$D\s+([\d.,]+)/);
                     if (priceMatch) {
-                        results.push({ externalId: idMatch[1], priceRaw: priceMatch[1], fullText: text });
+                        results.push({ externalId: idMatch[1], priceRaw: priceMatch[1] });
                     }
                 });
                 return results;
@@ -319,7 +293,7 @@ class PlaywrightSingleton {
             for (const item of extracted) {
                 prices.set(item.externalId, item.priceRaw);
             }
-            console.log(`[PlaywrightSingleton] Listing prices page ${pageNum}: ${prices.size} extracted`);
+            console.log(`[PlaywrightSingletonListing] Listing prices page ${pageNum}: ${prices.size} extracted`);
         }
         finally {
             await page.close();
@@ -327,4 +301,4 @@ class PlaywrightSingleton {
         return prices;
     }
 }
-exports.playwrightSingleton = PlaywrightSingleton.getInstance();
+exports.playwrightSingletonListing = PlaywrightSingletonListing.getInstance();

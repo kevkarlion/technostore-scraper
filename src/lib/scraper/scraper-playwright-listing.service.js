@@ -55,7 +55,7 @@ const cheerio = __importStar(require("cheerio"));
 const playwright_1 = require("playwright");
 const config_1 = require("./config");
 const http_client_1 = require("./http-client");
-const playwright_singleton_1 = require("./playwright-singleton");
+const playwright_singleton_listing_1 = require("./playwright-singleton-listing");
 // Configure Playwright to use the browsers installed in user's cache
 const PLAYWRIGHT_BROWSERS_PATH = process.env.PLAYWRIGHT_BROWSERS_PATH || '/home/kriq/.cache/ms-playwright';
 // ============================================================================
@@ -562,8 +562,8 @@ class ScraperPlaywrightListingService {
             }
             // Initialize Playwright singleton
             try {
-                await playwright_singleton_1.playwrightSingleton.launch();
-                await playwright_singleton_1.playwrightSingleton.initSession(this.config.baseUrl, {
+                await playwright_singleton_listing_1.playwrightSingletonListing.launch();
+                await playwright_singleton_listing_1.playwrightSingletonListing.initSession(this.config.baseUrl, {
                     email: this.config.email,
                     password: this.config.password,
                 });
@@ -586,7 +586,7 @@ class ScraperPlaywrightListingService {
                     if (playwrightReady) {
                         const maxPages = 20;
                         for (let pageNum = 1; pageNum <= maxPages; pageNum++) {
-                            const pagePrices = await playwright_singleton_1.playwrightSingleton.extractListingPrices(cat.idsubrubro1, pageNum);
+                            const pagePrices = await playwright_singleton_listing_1.playwrightSingletonListing.extractListingPrices(cat.idsubrubro1, pageNum);
                             if (pagePrices.size === 0)
                                 break;
                             for (const [id, price] of pagePrices) {
@@ -642,7 +642,7 @@ class ScraperPlaywrightListingService {
                         for (let i = 0; i < productsToEnrich.length; i += ENRICHMENT_CONCURRENCY) {
                             const batch = productsToEnrich.slice(i, i + ENRICHMENT_CONCURRENCY);
                             const results = await Promise.allSettled(batch.map(async ({ product }) => {
-                                const enriched = await playwright_singleton_1.playwrightSingleton.enrichProduct(product.externalId);
+                                const enriched = await playwright_singleton_listing_1.playwrightSingletonListing.enrichProduct(product.externalId);
                                 enriched.name = product.name;
                                 enriched.categories = [cat.id];
                                 // For new products, prefer listing price if available (already has conIva=1)
@@ -724,7 +724,7 @@ class ScraperPlaywrightListingService {
         finally {
             // Close Playwright singleton
             if (playwrightReady) {
-                await playwright_singleton_1.playwrightSingleton.close();
+                await playwright_singleton_listing_1.playwrightSingletonListing.close();
             }
         }
         return {
