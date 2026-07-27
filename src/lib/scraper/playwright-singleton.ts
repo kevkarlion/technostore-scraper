@@ -209,7 +209,9 @@ class PlaywrightSingleton {
 
     const page = await this.newPage();
     try {
-      await page.goto(`${url}/articulo.aspx?id=${externalId}?conIva=1`, {
+      const fullUrl = `${url}/articulo.aspx?id=${externalId}&conIva=1`;
+      console.log('[DEBUG] enrichProduct URL:', fullUrl);
+      await page.goto(fullUrl, {
         waitUntil: 'networkidle',
         timeout: 45000,
       });
@@ -223,13 +225,30 @@ class PlaywrightSingleton {
       const scraped = await page.evaluate(() => {
         const data: Record<string, any> = {};
 
-        // USD price
-        const usdEl = document.querySelector('div.col-12.tg-body-f18');
-        if (usdEl) {
-          data.priceRaw = usdEl.textContent?.trim() || '';
-        } else {
-          const priceText = document.body.innerText.match(/U\$D\s*[\d.,]+/);
-          if (priceText) data.priceRaw = priceText[0];
+        // USD price: find price that comes right before "Precio de lista" (main product)
+        const bodyText = document.body.innerText || '';
+        const precioListaIndex = bodyText.indexOf('Precio de lista');
+        if (precioListaIndex > 0) {
+          const beforeText = bodyText.substring(0, precioListaIndex);
+          // Find the last U$D price in this section (main product, not related)
+          const matches = beforeText.matchAll(/U.?D[^0-9]*([0-9.,]+)/g);
+          const lastMatch = Array.from(matches).pop();
+          if (lastMatch) {
+            data.priceRaw = 'U$D ' + lastMatch[1];
+          }
+        }
+
+        // Also try to find via selector only if no price found yet
+        if (!data.priceRaw) {
+          const usdEls = document.querySelectorAll('div.col-12.tg-body-f18');
+          for (const el of Array.from(usdEls)) {
+            const text = el.textContent?.trim() || '';
+            // Only use if it starts with U$D and has price (not "Comprar USD")
+            if (text.startsWith('U$D') && text.match(/[\d.,]+/) && !text.includes('Comprar')) {
+              data.priceRaw = text;
+              break;
+            }
+          }
         }
 
         // ARS price
@@ -328,10 +347,13 @@ class PlaywrightSingleton {
     try {
       await page.goto(`${url}/buscar.aspx?idsubrubro1=${idsubrubro1}&pag=${pageNum}&conIva=1`, {
         waitUntil: 'networkidle',
-        timeout: 20000,
+        timeout: 30000,
       });
 
       await page.waitForSelector('a[href*="articulo.aspx?id="]', { timeout: 10000 }).catch(() => {});
+
+      // Wait for prices to render (JS-rendered content needs extra time)
+      await page.waitForTimeout(2000);
 
       const extracted = await page.evaluate(() => {
         const results: Array<{ externalId: string; priceRaw: string }> = [];

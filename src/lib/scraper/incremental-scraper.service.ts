@@ -290,7 +290,23 @@ export async function runIncrementalScraper(forceFullScrape: boolean = false, ca
     process.exit(1);
   }, GLOBAL_TIMEOUT_MS);
 
-  // Step 1: Pre-check
+  // CRITICAL: Capture existing product IDs BEFORE pre-check runs.
+  // Pre-check updates scraper_state with current IDs from the website.
+  // If we read AFTER pre-check, new products would already be in the state
+  // and the scraper would skip them (thinking they're "existing").
+  const db = await getDb();
+  const oldProductIdsByCategory = new Map<string, string[]>();
+  if (!skipExistingCheck) {
+    for (const cat of categories) {
+      const state = await db.collection('scraper_state').findOne({ categoryId: cat.id });
+      if (state?.productIds?.length > 0) {
+        oldProductIdsByCategory.set(cat.id, state.productIds);
+      }
+    }
+    console.log(`[Incremental] Captured old product IDs for ${oldProductIdsByCategory.size} categories`);
+  }
+
+  // Step 1: Pre-check (this updates scraper_state with current IDs)
   let preCheckResult: { changed: string[]; unchanged: string[]; errors: string[] };
   if (forceFullScrape) {
     console.log('[Incremental] Force full scrape — skipping pre-check');
@@ -302,17 +318,16 @@ export async function runIncrementalScraper(forceFullScrape: boolean = false, ca
 
   const toScrape = [...preCheckResult.changed, ...preCheckResult.errors];
 
-  // Collect existing product IDs per category from pre-check — Playwright will skip these
-  // UNLESS skipExistingCheck is true (forces Playwright to re-enrich ALL products)
-  const db = await getDb();
+  // Use the OLD product IDs (captured before pre-check) for Playwright skip logic.
+  // This ensures new products are NOT skipped — they weren't in the old state.
   const existingProductIdsByCategory = new Map<string, string[]>();
   if (!skipExistingCheck) {
     for (const categoryId of preCheckResult.changed) {
-      const state = await db.collection('scraper_state').findOne({ categoryId });
-      if (state?.productIds?.length > 0) {
-        existingProductIdsByCategory.set(categoryId, state.productIds);
+      const oldIds = oldProductIdsByCategory.get(categoryId);
+      if (oldIds && oldIds.length > 0) {
+        existingProductIdsByCategory.set(categoryId, oldIds);
         console.log(
-          `[Incremental] ${categoryId}: ${state.productIds.length} known products from previous scrape — Playwright will skip these`
+          `[Incremental] ${categoryId}: ${oldIds.length} known products from previous scrape — Playwright will skip these`
         );
       }
     }

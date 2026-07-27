@@ -186,16 +186,15 @@ export class PlaywrightEnricher {
       const scraped = await page.evaluate(() => {
         const data: Record<string, any> = {};
 
-        // USD price: div.col-12.tg-body-f18 → "U$D 169,37"
-        const usdEl = document.querySelector('div.col-12.tg-body-f18');
-        if (usdEl) {
-          data.priceRaw = usdEl.textContent?.trim() || '';
-        } else {
-          // Fallback: look for any element with price text
-          const priceText = document.body.innerText.match(/U\$D\s*[\d.,]+/);
-          if (priceText) {
-            console.log('[Playwright] Fallback price found:', priceText[0]);
-            data.priceRaw = priceText[0];
+        // USD price: find price that comes right before "Precio de lista" (main product)
+        const bodyText = document.body.innerText || '';
+        const precioListaIndex = bodyText.indexOf('Precio de lista');
+        if (precioListaIndex > 0) {
+          const beforeText = bodyText.substring(0, precioListaIndex);
+          const matches = beforeText.matchAll(/U.?D[^0-9]*([0-9.,]+)/g);
+          const lastMatch = Array.from(matches).pop();
+          if (lastMatch) {
+            data.priceRaw = 'U$D ' + lastMatch[1];
           }
         }
 

@@ -377,7 +377,7 @@ class ScraperService {
                     listingImages.push(imgUrl);
                 }
             }
-            // NOTE: priceRaw is NOT set here — prices come from Playwright detail page
+            // NOTE: priceRaw is NOT set here — prices come from Playwright listing/detail page
             products.push({
                 externalId,
                 name,
@@ -469,9 +469,7 @@ class ScraperService {
                     const productsToEnrich = products.filter(p => !existingIds.has(p.externalId));
                     const skippedCount = products.length - productsToEnrich.length;
                     let enrichedCount = 0;
-                    // Step 1: Extract prices from listing pages via Playwright (reliable)
-                    // This is the SAME logic as playwright-listing — prices come from the
-                    // rendered listing text ("U$D 76,21"), not from fragile detail page selectors.
+                    // Step 1: Extract prices from listing pages (with conIva=1) - reliable source
                     const listingPrices = new Map();
                     if (playwrightReady && productsToEnrich.length > 0) {
                         try {
@@ -484,23 +482,27 @@ class ScraperService {
                                     listingPrices.set(id, price);
                                 }
                             }
-                            console.log(`[Playwright] ${cat.id}: ${listingPrices.size} listing prices extracted`);
+                            console.log(`[Playwright] ${cat.id}: ${listingPrices.size} listing prices extracted (with conIva=1)`);
                         }
                         catch (e) {
                             console.error(`[Playwright] ${cat.id}: failed to extract listing prices:`, e.message);
                         }
                     }
-                    // Step 2: Enrich new products — detail page for desc/SKU/stock/images,
-                    // listing price for costPrice (reliable source)
+                    // Step 2: Enrich new products — detail page for desc/SKU/stock/images, listing for price
                     if (playwrightReady && productsToEnrich.length > 0) {
                         for (let i = 0; i < productsToEnrich.length; i += ENRICHMENT_CONCURRENCY) {
                             const batch = productsToEnrich.slice(i, i + ENRICHMENT_CONCURRENCY);
                             const results = await Promise.allSettled(batch.map(async (product) => {
                                 const enriched = await playwright_singleton_1.playwrightSingleton.enrichProduct(product.externalId, this.config.baseUrl);
-                                // Price from listing page (reliable) — NOT from detail page
+                                // Price: MUST come from listing (with conIva=1) - no fallback
                                 const listingPrice = listingPrices.get(product.externalId);
                                 if (listingPrice) {
                                     product.priceRaw = listingPrice;
+                                }
+                                else {
+                                    // No price from listing - skip this product and log warning
+                                    console.log(`[WARNING] ${product.externalId}: skipped - no price from listing`);
+                                    return; // Skip this product
                                 }
                                 // Other fields from detail page
                                 if (enriched.description)
