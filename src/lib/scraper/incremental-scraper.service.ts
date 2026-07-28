@@ -367,7 +367,7 @@ export async function runIncrementalScraper(forceFullScrape: boolean = false, ca
 
     const scrapeResults = { created: 0, updated: 0, createdIds: [] as string[], updatedIds: [] as string[], errors: [] as string[], durationMs: 0, discontinued: 0 };
     const startTime = Date.now();
-    const MAX_PARALLEL = 4;
+    const RESTART_PLAYWRIGHT_EVERY = 20; // Restart browser every N categories to prevent memory buildup
 
     // Step 2a: Mark discontinued + update timestamp for UNCHANGED categories
     // Uses the product IDs captured during the last successful full scrape (already in scraper_state).
@@ -410,77 +410,71 @@ export async function runIncrementalScraper(forceFullScrape: boolean = false, ca
     }
     scrapeResults.discontinued = totalDiscontinued;
 
-    // Step 2b: Scrape only CHANGED + ERROR categories, sharing the authenticated session
+    // Step 2b: Scrape changed + error categories SEQUENTIALLY (less memory pressure)
     const CATEGORY_TIMEOUT_MS = 3 * 60 * 1000; // 3 minutes per category
 
-    for (let i = 0; i < toScrape.length; i += MAX_PARALLEL) {
+    for (let i = 0; i < toScrape.length; i++) {
       if (timedOut) {
-        console.error('[Incremental] Aborting remaining batches due to global timeout');
+        console.error('[Incremental] Aborting remaining categories due to global timeout');
         break;
       }
 
-      const batch = toScrape.slice(i, i + MAX_PARALLEL);
-      console.log(`[Incremental] Scraping batch ${Math.floor(i / MAX_PARALLEL) + 1}: ${batch.join(', ')}`);
+      const catId = toScrape[i];
+      console.log(`[Incremental] Scraping ${i + 1}/${toScrape.length}: ${catId}`);
 
-      const batchResults = await Promise.all(
-        batch.map(async (catId) => {
-          try {
-            // Pass existing product IDs so Playwright only enriches NEW products
-            const existingProductIds = existingProductIdsByCategory.get(catId) || [];
-            const scraperPromise = runScraper(
-              { categoryId: catId, source: 'incremental', skipLogin: true, existingProductIds },
-              sharedHttp,
-            );
-            
-            let timeoutId: NodeJS.Timeout;
-            const timeoutPromise = new Promise<never>((_, reject) => {
-              timeoutId = setTimeout(() => reject(new Error(`Category ${catId} timed out after 3 minutes`)), CATEGORY_TIMEOUT_MS);
-              categoryTimeouts.push(timeoutId);
-            });
+      try {
+        const existingProductIds = existingProductIdsByCategory.get(catId) || [];
+        const scraperPromise = runScraper(
+          { categoryId: catId, source: 'incremental', skipLogin: true, existingProductIds },
+          sharedHttp,
+        );
 
-            const result = await Promise.race([scraperPromise, timeoutPromise]);
-            clearTimeout(timeoutId!);
+        let timeoutId: NodeJS.Timeout;
+        const timeoutPromise = new Promise<never>((_, reject) => {
+          timeoutId = setTimeout(() => reject(new Error(`Category ${catId} timed out after 3 minutes`)), CATEGORY_TIMEOUT_MS);
+          categoryTimeouts.push(timeoutId);
+        });
 
-            return result;
-          } catch (e: any) {
-            console.error(`[Incremental] Error scraping ${catId}:`, e.message);
-            return { created: 0, updated: 0, createdIds: [], updatedIds: [], errors: [`Error scraping ${catId}: ${e.message}`], success: false };
-          }
-        }),
-      );
+        const result = await Promise.race([scraperPromise, timeoutPromise]);
+        clearTimeout(timeoutId!);
 
-      for (const r of batchResults) {
-        scrapeResults.created += r.created || 0;
-        scrapeResults.updated += r.updated || 0;
-        if (r.createdIds) scrapeResults.createdIds.push(...r.createdIds);
-        if (r.updatedIds) scrapeResults.updatedIds.push(...r.updatedIds);
-        if (r.errors) {
-          scrapeResults.errors.push(...r.errors);
-        }
+        scrapeResults.created += result.created || 0;
+        scrapeResults.updated += result.updated || 0;
+        if (result.createdIds) scrapeResults.createdIds.push(...result.createdIds);
+        if (result.updatedIds) scrapeResults.updatedIds.push(...result.updatedIds);
+        if (result.errors) scrapeResults.errors.push(...result.errors);
+
+        // Update scraper_state with ACTUAL DB state
+        const dbProducts = await db.collection('products')
+          .find({ categories: catId, supplier: 'jotakp' }, { projection: { externalId: 1 } })
+          .toArray();
+        const dbIds = dbProducts.map((p: any) => p.externalId).filter(Boolean);
+        await db.collection('scraper_state').updateOne(
+          { categoryId: catId },
+          {
+            $set: {
+              categoryId: catId,
+              productIds: dbIds,
+              productCount: dbIds.length,
+              lastScrapeAt: new Date(),
+            },
+          },
+          { upsert: true },
+        );
+        console.log(`[ScraperState] ${catId}: updated with ${dbIds.length} products from DB`);
+
+      } catch (e: any) {
+        console.error(`[Incremental] Error scraping ${catId}:`, e.message);
+        scrapeResults.errors.push(`Error scraping ${catId}: ${e.message}`);
       }
 
-      // Update scraper_state for scraped categories with ACTUAL DB state
-      for (const catId of batch) {
+      // Restart Playwright every N categories to prevent memory buildup
+      if ((i + 1) % RESTART_PLAYWRIGHT_EVERY === 0 && i + 1 < toScrape.length) {
         try {
-          const dbProducts = await db.collection('products')
-            .find({ categories: catId, supplier: 'jotakp' }, { projection: { externalId: 1 } })
-            .toArray();
-          const dbIds = dbProducts.map((p: any) => p.externalId).filter(Boolean);
-          await db.collection('scraper_state').updateOne(
-            { categoryId: catId },
-            {
-              $set: {
-                categoryId: catId,
-                productIds: dbIds,
-                productCount: dbIds.length,
-                lastScrapeAt: new Date(),
-              },
-            },
-            { upsert: true },
-          );
-          console.log(`[ScraperState] ${catId}: updated with ${dbIds.length} products from DB`);
+          console.log(`[Incremental] Restarting Playwright after ${i + 1} categories...`);
+          await playwrightSingleton.close();
         } catch (e: any) {
-          console.error(`[ScraperState] ${catId}: failed to update — ${e.message}`);
+          console.error(`[Incremental] Error restarting Playwright: ${e.message}`);
         }
       }
     }
