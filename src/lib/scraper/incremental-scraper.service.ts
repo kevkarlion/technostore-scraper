@@ -301,7 +301,7 @@ export async function runIncrementalScraper(forceFullScrape: boolean = false, ca
 
     // Global timeout: abort if entire run takes > 30 minutes
     // Uses a flag instead of process.exit() to allow graceful cleanup
-    const GLOBAL_TIMEOUT_MS = 30 * 60 * 1000;
+    const GLOBAL_TIMEOUT_MS = 60 * 60 * 1000;
     let timedOut = false;
     globalTimeout = setTimeout(() => {
       timedOut = true;
@@ -411,7 +411,7 @@ export async function runIncrementalScraper(forceFullScrape: boolean = false, ca
     scrapeResults.discontinued = totalDiscontinued;
 
     // Step 2b: Scrape changed + error categories SEQUENTIALLY (less memory pressure)
-    const CATEGORY_TIMEOUT_MS = 3 * 60 * 1000; // 3 minutes per category
+    const CATEGORY_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes per category
 
     for (let i = 0; i < toScrape.length; i++) {
       if (timedOut) {
