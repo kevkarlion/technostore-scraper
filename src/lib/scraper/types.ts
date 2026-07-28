@@ -99,6 +99,8 @@ export interface ScraperResult {
   timestamp: Date;
   /** All external IDs found per category during this scrape (keyed by category ID) */
   categoryExternalIds?: Record<string, string[]>;
+  /** Accumulated products from dry-run mode (not persisted yet) */
+  products?: RawProduct[];
 }
 
 /**
@@ -126,6 +128,8 @@ export interface ScraperRunRequest {
   skipLogin?: boolean;
   /** Product IDs that existed before this scrape — Playwright skips these (only enriches new products) */
   existingProductIds?: string[];
+  /** If true, skip DB writes and return accumulated products in result */
+  dryRun?: boolean;
 }
 
 /**

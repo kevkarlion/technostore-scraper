@@ -18,10 +18,13 @@
 import * as cheerio from 'cheerio';
 import crypto from 'crypto';
 import { jotakpCategories, getScraperConfig } from './config';
-import { runScraper } from './scraper.service';
+import { runScraper, productRepository } from './scraper.service';
 import { createHttpClient, safeGet, getRequestDelay, delay } from './http-client';
 import { playwrightSingleton } from './playwright-singleton';
+import { uploadProductImages } from './image-downloader';
+import { parsePrice } from './data-transformer';
 import type { AxiosInstance } from 'axios';
+import type { RawProduct } from './types';
 
 // ============================================================================
 // DATABASE — reuse server.ts singleton via (global as any).db
@@ -405,6 +408,8 @@ export async function runIncrementalScraper(forceFullScrape: boolean = false, ca
 
     // Step 2b: Scrape changed + error categories SEQUENTIALLY (less memory pressure)
     const CATEGORY_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes per category
+    const allProducts: RawProduct[] = [];     // dry-run accumulator
+    const allCategoryIds = new Set<string>(); // track which categories were processed
 
     for (let i = 0; i < toScrape.length; i++) {
       const catId = toScrape[i];
@@ -413,13 +418,13 @@ export async function runIncrementalScraper(forceFullScrape: boolean = false, ca
       try {
         const existingProductIds = existingProductIdsByCategory.get(catId) || [];
         const scraperPromise = runScraper(
-          { categoryId: catId, source: 'incremental', skipLogin: true, existingProductIds },
+          { categoryId: catId, source: 'incremental', skipLogin: true, existingProductIds, dryRun: true },
           sharedHttp,
         );
 
         let timeoutId: NodeJS.Timeout;
         const timeoutPromise = new Promise<never>((_, reject) => {
-          timeoutId = setTimeout(() => reject(new Error(`Category ${catId} timed out after 3 minutes`)), CATEGORY_TIMEOUT_MS);
+          timeoutId = setTimeout(() => reject(new Error(`Category ${catId} timed out after 5 minutes`)), CATEGORY_TIMEOUT_MS);
           categoryTimeouts.push(timeoutId);
         });
 
@@ -432,7 +437,143 @@ export async function runIncrementalScraper(forceFullScrape: boolean = false, ca
         if (result.updatedIds) scrapeResults.updatedIds.push(...result.updatedIds);
         if (result.errors) scrapeResults.errors.push(...result.errors);
 
-        // Update scraper_state with ACTUAL DB state
+        // Accumulate products from dry-run mode
+        if (result.products && result.products.length > 0) {
+          allProducts.push(...result.products);
+          allCategoryIds.add(catId);
+        }
+
+        console.log(`[Incremental] ${catId}: ${result.products?.length || 0} products accumulated`);
+      } catch (e: any) {
+        console.error(`[Incremental] Error scraping ${catId}:`, e.message);
+        scrapeResults.errors.push(`Error scraping ${catId}: ${e.message}`);
+      }
+
+      // Restart Playwright every N categories to prevent memory buildup
+      if ((i + 1) % RESTART_PLAYWRIGHT_EVERY === 0 && i + 1 < toScrape.length) {
+        try {
+          console.log(`[Incremental] Restarting Playwright after ${i + 1} categories...`);
+          await playwrightSingleton.close();
+        } catch (e: any) {
+          console.error(`[Incremental] Error restarting Playwright: ${e.message}`);
+        }
+      }
+    }
+
+    // ============================================================================
+    // BATCH SAVE: validate all products, then save + update scraper_state atomically
+    // ============================================================================
+    console.log(`\n[Incremental] Batch save: ${allProducts.length} total products accumulated from ${allCategoryIds.size} categories`);
+
+    const saveErrors: string[] = [];
+    const savedIds: string[] = [];
+    let savedCount = 0;
+    let updatedCount = 0;
+    let skippedCount = 0;
+
+    if (allProducts.length === 0) {
+      const msg = allCategoryIds.size > 0
+        ? 'Categories were processed but no products had valid price data'
+        : 'No categories had changes to save';
+      saveErrors.push(msg);
+      console.warn(`[Incremental] ${msg}`);
+    }
+
+    for (const product of allProducts) {
+      // Validate required fields
+      if (!product.externalId) {
+        saveErrors.push('Product missing externalId — skipping');
+        skippedCount++;
+        continue;
+      }
+      if (!product.priceRaw) {
+        saveErrors.push(`[VALIDATION] ${product.externalId}: no priceRaw — skipping`);
+        skippedCount++;
+        continue;
+      }
+
+      try {
+        const costPrice = parsePrice(product.priceRaw);
+        if (costPrice <= 0) {
+          saveErrors.push(`[VALIDATION] ${product.externalId}: invalid price (${product.priceRaw}) — skipping`);
+          skippedCount++;
+          continue;
+        }
+
+        const upsertPayload: any = {
+          externalId: product.externalId,
+          name: product.name,
+          categories: product.categories,
+          costPrice,
+          currency: 'USD',
+        };
+        if (product.stock > 0) upsertPayload.stock = product.stock;
+        if (product.sku) upsertPayload.sku = product.sku;
+        if (product.description) upsertPayload.description = product.description;
+        if (product.imageUrls?.length > 0) upsertPayload.imageUrls = product.imageUrls;
+
+        const result = await productRepository.atomicUpsertByExternalId(upsertPayload);
+        if (result.created || result.updated) {
+          savedCount++;
+          if (result.created) scrapeResults.createdIds.push(product.externalId);
+          if (result.updated) {
+            updatedCount++;
+            scrapeResults.updatedIds.push(product.externalId);
+          }
+          savedIds.push(product.externalId);
+        }
+      } catch (e: any) {
+        saveErrors.push(`Error saving product ${product.externalId}: ${e.message}`);
+      }
+    }
+
+    // Upload images to Cloudinary for newly created products
+    for (const product of allProducts) {
+      if (!product.imageUrls?.length) continue;
+      if (!scrapeResults.createdIds.includes(product.externalId)) continue;
+      try {
+        const cloudUrls = await uploadProductImages(
+          product.imageUrls,
+          'jotakp',
+          product.externalId,
+        );
+        product.cloudinaryUrls = cloudUrls;
+        await db.collection('products').updateOne(
+          { externalId: product.externalId, supplier: 'jotakp' },
+          { $set: { imageUrls: cloudUrls, updatedAt: new Date() } },
+        );
+      } catch {
+        // Image upload is optional
+      }
+    }
+
+    // Mark discontinued for changed categories (dryRun skips this in runScraper)
+    const allExternalIdsByCategory = new Map<string, string[]>();
+    for (const product of allProducts) {
+      for (const catId of product.categories) {
+        if (!allExternalIdsByCategory.has(catId)) allExternalIdsByCategory.set(catId, []);
+        allExternalIdsByCategory.get(catId)!.push(product.externalId);
+      }
+    }
+    for (const [catId, scrapedIds] of allExternalIdsByCategory) {
+      try {
+        // Combine scraped IDs with existing DB IDs for this category
+        const existingIds = existingProductIdsByCategory.get(catId) || [];
+        const allActiveIds = [...new Set([...existingIds, ...scrapedIds])];
+        const discontinued = await productRepository.markDiscontinued(catId, allActiveIds);
+        if (discontinued > 0) {
+          console.log(`[Discontinued] ${catId}: ${discontinued} products marked`);
+          totalDiscontinued += discontinued;
+        }
+      } catch (e: any) {
+        console.error(`[Discontinued] ${catId}: ERROR — ${e.message}`);
+      }
+    }
+    scrapeResults.discontinued = totalDiscontinued;
+
+    // Update scraper_state for ALL accumulated categories
+    for (const catId of allCategoryIds) {
+      try {
         const dbProducts = await db.collection('products')
           .find({ categories: catId, supplier: 'jotakp' }, { projection: { externalId: 1 } })
           .toArray();
@@ -450,22 +591,28 @@ export async function runIncrementalScraper(forceFullScrape: boolean = false, ca
           { upsert: true },
         );
         console.log(`[ScraperState] ${catId}: updated with ${dbIds.length} products from DB`);
-
       } catch (e: any) {
-        console.error(`[Incremental] Error scraping ${catId}:`, e.message);
-        scrapeResults.errors.push(`Error scraping ${catId}: ${e.message}`);
-      }
-
-      // Restart Playwright every N categories to prevent memory buildup
-      if ((i + 1) % RESTART_PLAYWRIGHT_EVERY === 0 && i + 1 < toScrape.length) {
-        try {
-          console.log(`[Incremental] Restarting Playwright after ${i + 1} categories...`);
-          await playwrightSingleton.close();
-        } catch (e: any) {
-          console.error(`[Incremental] Error restarting Playwright: ${e.message}`);
-        }
+        console.error(`[ScraperState] ${catId}: failed to update — ${e.message}`);
       }
     }
+
+    // Also update scraper_state for unchanged categories (mark discontinued)
+    // This already happens in Step 2a above, so no need to repeat.
+
+    // Log validation errors
+    if (saveErrors.length > 0) {
+      console.warn(`[Incremental] ${saveErrors.length} validation/save issues:`);
+      for (const err of saveErrors) {
+        console.warn(`  ${err}`);
+        scrapeResults.errors.push(err);
+      }
+    }
+
+    scrapeResults.created = savedCount;
+    console.log(
+      `[Incremental] Batch save complete: ${savedCount} saved, ${skippedCount} skipped ` +
+      `(${saveErrors.length - skippedCount} errors)`
+    );
 
     scrapeResults.durationMs = Date.now() - startTime;
     console.log(
