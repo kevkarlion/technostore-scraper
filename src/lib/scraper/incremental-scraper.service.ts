@@ -288,7 +288,6 @@ export async function runIncrementalScraper(forceFullScrape: boolean = false, ca
   const sharedHttp = createHttpClient(config);
 
   // Track resources for cleanup
-  let globalTimeout: NodeJS.Timeout | null = null;
   const categoryTimeouts: NodeJS.Timeout[] = [];
   let playwrightWasLaunched = false;
 
@@ -299,14 +298,9 @@ export async function runIncrementalScraper(forceFullScrape: boolean = false, ca
     await bootScraper.login();
     console.log('[Incremental] Shared session established for all categories');
 
-    // Global timeout: abort if entire run takes > 30 minutes
-    // Uses a flag instead of process.exit() to allow graceful cleanup
-    const GLOBAL_TIMEOUT_MS = 60 * 60 * 1000;
-    let timedOut = false;
-    globalTimeout = setTimeout(() => {
-      timedOut = true;
-      console.error('[Incremental] GLOBAL TIMEOUT: scraper exceeded 30 minutes, aborting');
-    }, GLOBAL_TIMEOUT_MS);
+    // No global timeout — let it run as long as needed.
+    // scraper_state is updated after each category, so a crash mid-way
+    // resumes naturally on the next run (pre-check re-detects unprocessed categories).
 
     // CRITICAL: Capture existing product IDs BEFORE pre-check runs.
     // Pre-check updates scraper_state with current IDs from the website.
@@ -373,7 +367,6 @@ export async function runIncrementalScraper(forceFullScrape: boolean = false, ca
     // Uses the product IDs captured during the last successful full scrape (already in scraper_state).
     let totalDiscontinued = 0;
     for (const catId of preCheckResult.unchanged) {
-      if (timedOut) break;
       try {
         // Use DB as source of truth, not scraper_state
         const dbProducts = await db.collection('products')
@@ -414,11 +407,6 @@ export async function runIncrementalScraper(forceFullScrape: boolean = false, ca
     const CATEGORY_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes per category
 
     for (let i = 0; i < toScrape.length; i++) {
-      if (timedOut) {
-        console.error('[Incremental] Aborting remaining categories due to global timeout');
-        break;
-      }
-
       const catId = toScrape[i];
       console.log(`[Incremental] Scraping ${i + 1}/${toScrape.length}: ${catId}`);
 
@@ -507,11 +495,7 @@ export async function runIncrementalScraper(forceFullScrape: boolean = false, ca
     // ============================================================================
     console.log('[Incremental] Cleaning up resources...');
 
-    // 1. Clear all timeouts
-    if (globalTimeout) {
-      clearTimeout(globalTimeout);
-      globalTimeout = null;
-    }
+    // 1. Clear category timeouts
     for (const t of categoryTimeouts) {
       clearTimeout(t);
     }

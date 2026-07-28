@@ -121,60 +121,76 @@ class PlaywrightSingleton {
     const page = await this.context.newPage();
 
     try {
-      // Navigate to login page
-      await page.goto(`${baseUrl}/loginext.aspx`, { waitUntil: 'networkidle', timeout: 20000 });
+      let loginAttempted = false;
+      try {
+        // Navigate to login page with timeout
+        await page.goto(`${baseUrl}/loginext.aspx`, { waitUntil: 'networkidle', timeout: 20000 });
 
-      if (credentials) {
-        await page.fill('#TxtEmail', credentials.email);
-        await page.fill('#TxtPass1', credentials.password);
+        if (credentials) {
+          await page.fill('#TxtEmail', credentials.email);
+          await page.fill('#TxtPass1', credentials.password);
 
-        await Promise.all([
-          page.waitForNavigation({ waitUntil: 'networkidle', timeout: 15000 }).catch(() => {}),
-          page.click('#BtnIngresar'),
-        ]);
-        console.log('[PlaywrightSingleton] Login submitted');
-      }
-
-      // Navigate to site to establish session.
-      // domcontentloaded is enough — networkidle may never fire on slow sites
-      // with lazy-loaded content. Session cookies are set on DOM load.
-      await page.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
-
-      // Select branch (Cipolletti, Id=1)
-      const branchOk = await page.evaluate(async () => {
-        try {
-          if (typeof (window as any).PageMethods !== 'undefined') {
-            return await new Promise<boolean>((resolve) => {
-              (window as any).PageMethods.SeleccionarSucursal(
-                1,
-                (response: any) => {
-                  const el = document.getElementById('varIdDeposito');
-                  if (el) (el as HTMLInputElement).value = response.IdDepositoDefecto;
-                  resolve(true);
-                },
-                () => resolve(false),
-              );
-            });
-          }
-          const resp = await fetch('/articulo.aspx/SeleccionarSucursal', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json; charset=utf-8',
-              'X-Requested-With': 'XMLHttpRequest',
-            },
-            body: JSON.stringify({ Id: 1 }),
-          });
-          return resp.ok;
-        } catch {
-          return false;
+          await Promise.all([
+            page.waitForNavigation({ waitUntil: 'networkidle', timeout: 15000 }).catch(() => {}),
+            page.click('#BtnIngresar'),
+          ]);
+          loginAttempted = true;
+          console.log('[PlaywrightSingleton] Login submitted');
         }
-      });
 
-      if (branchOk) {
+        // Navigate to site to establish session.
+        // Use 30s timeout — dyndns.org can be slow. domcontentloaded is enough
+        // since session cookies are set on DOM load, not after all resources.
+        try {
+          await page.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        } catch (navError: any) {
+          console.warn(`[PlaywrightSingleton] Base URL navigation timeout (${navError.message}) — continuing`);
+        }
+
+        // Select branch (Cipolletti, Id=1)
+        const branchOk = await page.evaluate(async () => {
+          try {
+            if (typeof (window as any).PageMethods !== 'undefined') {
+              return await new Promise<boolean>((resolve) => {
+                (window as any).PageMethods.SeleccionarSucursal(
+                  1,
+                  (response: any) => {
+                    const el = document.getElementById('varIdDeposito');
+                    if (el) (el as HTMLInputElement).value = response.IdDepositoDefecto;
+                    resolve(true);
+                  },
+                  () => resolve(false),
+                );
+              });
+            }
+            const resp = await fetch('/articulo.aspx/SeleccionarSucursal', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json; charset=utf-8',
+                'X-Requested-With': 'XMLHttpRequest',
+              },
+              body: JSON.stringify({ Id: 1 }),
+            });
+            return resp.ok;
+          } catch {
+            return false;
+          }
+        });
+
+        if (branchOk) {
+          this.initialized = true;
+          console.log('[PlaywrightSingleton] Session initialized: login OK, branch Cipolletti selected');
+        } else {
+          console.warn('[PlaywrightSingleton] Branch selection failed — extraction may still work');
+          // Mark as initialized anyway — the browser context exists and may have session cookies
+          this.initialized = true;
+        }
+      } catch (loginError: any) {
+        // If any login step fails (DNS timeout, slow page, etc.), the browser + context
+        // are still valid. Extraction pages (buscar.aspx, articulo.aspx) may work independently.
+        console.warn(`[PlaywrightSingleton] Session init failed (${loginError.message}) — browser context still available`);
+        // Mark as initialized so extraction can proceed — the browser context exists
         this.initialized = true;
-        console.log('[PlaywrightSingleton] Session initialized: login OK, branch Cipolletti selected');
-      } else {
-        console.error('[PlaywrightSingleton] Failed to select branch');
       }
     } finally {
       await page.close();
