@@ -594,12 +594,11 @@ const name = fullText.replace(/U\$D\s*[\d.,]+(\s*\+\s*IVA\s*[\d.]+%)*(\$\s*[\d.,
               continue;
             }
             
-            // TEMPORARY: Skip products without price only if isIncremental AND no priceRaw
-            // TODO: re-enable after debugging price extraction
-            // if (isIncremental && !product.priceRaw) {
-            //   console.log(`[WARNING] ${product.externalId}: skipped - no priceRaw at save time`);
-            //   continue;
-            // }
+            // Skip products without price in incremental mode — incomplete data is worse than missing
+            if (isIncremental && !product.priceRaw) {
+              console.log(`[SKIP] ${product.externalId}: no priceRaw — not saving incomplete product`);
+              continue;
+            }
             
             try {
               const upsertPayload: any = {

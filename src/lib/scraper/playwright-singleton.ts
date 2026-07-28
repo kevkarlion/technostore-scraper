@@ -176,7 +176,13 @@ class PlaywrightSingleton {
   }
 
   async newPage(): Promise<Page> {
-    if (!this.context) throw new Error('Browser not launched');
+    // Auto-recover: if browser crashed, restart immediately
+    if (!this.context) {
+      console.warn('[PlaywrightSingleton] Browser not launched — restarting...');
+      await this.close();
+      await this.launch();
+    }
+    if (!this.context) throw new Error('Browser not launched after restart');
     return this.context.newPage();
   }
 
