@@ -233,3 +233,33 @@ The two scrapers use **different Playwright singletons** to avoid conflicts:
 - Listing: `playwright-singleton-listing.ts`
 
 This ensures changes to one scraper's browser logic don't affect the other.
+
+---
+
+## Browser Resilience (Auto-Restart)
+
+Playwright puede degradarse durante scraping largo (muchas páginas), causando errores como:
+- `Target page, context or browser has been closed`
+- `net::ERR_ABORTED; maybe frame was detached`
+- `Protocol error (Target.createTarget): Failed to open a new tab`
+
+### Solución implementada
+
+El singleton de Playwright tiene un **contador de errores** con auto-restart:
+
+```typescript
+// Configuración
+const FAILURE_THRESHOLD = 3;  // Reiniciar después de 3 fallos consecutivos
+const FAILURE_WINDOW_MS = 60000;  // En menos de 1 minuto
+```
+
+**Comportamiento:**
+1. Cada error incrementa el contador
+2. Si hay 3+ errores en 1 minuto → reinicia el browser automáticamente
+3. Éxito resetea el contador a 0
+
+**Logs:**
+- `[PlaywrightSingleton] Too many failures (X), restarting browser...` → browser reiniciado
+- Después del restart, el scraping continúa
+
+Esto evita que el scraper falle completamente por degradación del browser.

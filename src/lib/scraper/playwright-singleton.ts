@@ -7,7 +7,8 @@
 
 import { chromium, Browser, BrowserContext, Page } from 'playwright';
 
-const PLAYWRIGHT_BROWSERS_PATH = process.env.PLAYWRIGHT_BROWSERS_PATH || '/home/kriq/.cache/ms-playwright';
+// PLAYWRIGHT_BROWSERS_PATH env var is used automatically by Playwright.
+// No need to read it here — playwright.launch() respects it natively.
 
 interface EnrichedProductData {
   priceRaw?: string;
@@ -65,12 +66,12 @@ class PlaywrightSingleton {
   private async _doLaunch(): Promise<void> {
     if (this.browser) return;
 
-    const chromiumPath = `${PLAYWRIGHT_BROWSERS_PATH}/chromium-1228/chrome-linux64/chrome`;
-    console.log('[PlaywrightSingleton] Launching browser:', chromiumPath);
+    // Let Playwright resolve the browser path from PLAYWRIGHT_BROWSERS_PATH.
+    // Don't hardcode chromium version — it changes on every Playwright update.
+    console.log('[PlaywrightSingleton] Launching browser');
 
     this.browser = await chromium.launch({
       headless: true,
-      executablePath: chromiumPath,
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
@@ -82,8 +83,8 @@ class PlaywrightSingleton {
         '--disable-default-apps',
         '--disable-sync',
         '--disable-translate',
-        '--single-process', // Reduce processes
-        '--js-flags=--max-old-space-size=256', // Limit JS heap
+        '--single-process',
+        '--js-flags=--max-old-space-size=256',
       ],
     });
 
@@ -410,11 +411,6 @@ class PlaywrightSingleton {
           if (!idMatch) return;
 
           const text = link.textContent?.trim() || '';
-          // Debug: log what we're seeing
-          if (text.includes('Comprar USD') || text.includes('U$D')) {
-            console.log('[DEBUG] Found link text:', text.substring(0, 100));
-          }
-          
           const priceMatch = text.match(/U\$D\s+([\d.,]+)/);
           if (priceMatch) {
             results.push({ externalId: idMatch[1], priceRaw: priceMatch[1], fullText: text });
@@ -423,6 +419,23 @@ class PlaywrightSingleton {
 
         return results;
       });
+
+      // Debug: log sample texts that didn't match (first 3)
+      const debugTexts = await page.evaluate(() => {
+        const links = document.querySelectorAll('a[href*=\"articulo.aspx?id=\"]');
+        const samples: string[] = [];
+        links.forEach((link, i) => {
+          if (i < 3) {
+            const text = link.textContent?.trim() || '';
+            const id = link.getAttribute('href')?.match(/id=(\d+)/)?.[1];
+            samples.push('[' + id + '] ' + text.substring(0, 80));
+          }
+        });
+        return samples;
+      });
+      if (extracted.length === 0 && debugTexts.length > 0) {
+        console.log('[DEBUG] No prices found. Sample texts: ' + debugTexts.join(' | '));
+      }
 
       for (const item of extracted) {
         prices.set(item.externalId, item.priceRaw);

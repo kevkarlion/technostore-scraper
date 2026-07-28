@@ -535,11 +535,12 @@ class ScraperService {
                         if (isIncremental && existingIds.has(product.externalId)) {
                             continue;
                         }
-                        // Skip products without price (incremental mode requires price from listing)
-                        if (isIncremental && !product.priceRaw) {
-                            console.log(`[WARNING] ${product.externalId}: skipped - no priceRaw at save time`);
-                            continue;
-                        }
+                        // TEMPORARY: Skip products without price only if isIncremental AND no priceRaw
+                        // TODO: re-enable after debugging price extraction
+                        // if (isIncremental && !product.priceRaw) {
+                        //   console.log(`[WARNING] ${product.externalId}: skipped - no priceRaw at save time`);
+                        //   continue;
+                        // }
                         try {
                             const upsertPayload = {
                                 externalId: product.externalId,

@@ -344,10 +344,6 @@ class PlaywrightSingleton {
                     if (!idMatch)
                         return;
                     const text = link.textContent?.trim() || '';
-                    // Debug: log what we're seeing
-                    if (text.includes('Comprar USD') || text.includes('U$D')) {
-                        console.log('[DEBUG] Found link text:', text.substring(0, 100));
-                    }
                     const priceMatch = text.match(/U\$D\s+([\d.,]+)/);
                     if (priceMatch) {
                         results.push({ externalId: idMatch[1], priceRaw: priceMatch[1], fullText: text });
@@ -355,6 +351,22 @@ class PlaywrightSingleton {
                 });
                 return results;
             });
+            // Debug: log sample texts that didn't match (first 3)
+            const debugTexts = await page.evaluate(() => {
+                const links = document.querySelectorAll('a[href*=\"articulo.aspx?id=\"]');
+                const samples = [];
+                links.forEach((link, i) => {
+                    if (i < 3) {
+                        const text = link.textContent?.trim() || '';
+                        const id = link.getAttribute('href')?.match(/id=(\d+)/)?.[1];
+                        samples.push('[' + id + '] ' + text.substring(0, 80));
+                    }
+                });
+                return samples;
+            });
+            if (extracted.length === 0 && debugTexts.length > 0) {
+                console.log('[DEBUG] No prices found. Sample texts: ' + debugTexts.join(' | '));
+            }
             for (const item of extracted) {
                 prices.set(item.externalId, item.priceRaw);
             }

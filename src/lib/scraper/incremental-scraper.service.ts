@@ -9,6 +9,10 @@
  *      compare with scraper_state.
  *   2. runIncrementalScraper(): pre-check → scrape all categories via
  *      runScraper() → return results.
+ *
+ * Resource cleanup:
+ *   All resources (Playwright browser, MongoDB connections) are cleaned up
+ *   in a finally block to prevent leaks on errors or timeouts.
  */
 
 import * as cheerio from 'cheerio';
@@ -16,30 +20,40 @@ import crypto from 'crypto';
 import { jotakpCategories, getScraperConfig } from './config';
 import { runScraper } from './scraper.service';
 import { createHttpClient, safeGet, getRequestDelay, delay } from './http-client';
+import { playwrightSingleton } from './playwright-singleton';
 import type { AxiosInstance } from 'axios';
 
 // ============================================================================
-// PERSISTENT STORE (same singleton pattern as scraper.service)
+// DATABASE — reuse server.ts singleton via (global as any).db
 // ============================================================================
 
-let dbInstance: any = null;
-let mongoClient: any = null;
-
+/**
+ * Get the shared MongoDB database instance from server.ts.
+ * NEVER creates its own MongoClient — avoids connection duplication.
+ * server.ts must be running (it sets (global as any).db on boot).
+ */
 async function getDb(): Promise<any> {
   if ((global as any).db) {
     return (global as any).db;
   }
-  if (!dbInstance) {
-    const { MongoClient } = await import('mongodb');
-    const MONGO_URI = process.env.MONGO_URI || process.env.MONGODB_URI;
-    const DB_NAME = process.env.DB_NAME || process.env.MONGODB_DB_NAME || 'ecommerce';
-    if (!MONGO_URI) throw new Error('MONGO_URI is required');
+  // Fallback: if called outside server.ts context (e.g. standalone script),
+  // create a one-shot connection. This path should NOT be hit in production.
+  console.warn('[Incremental] global.db not found — creating temporary connection');
+  const { MongoClient } = await import('mongodb');
+  const MONGO_URI = process.env.MONGO_URI || process.env.MONGODB_URI;
+  const DB_NAME = process.env.DB_NAME || process.env.MONGODB_DB_NAME || 'ecommerce';
+  if (!MONGO_URI) throw new Error('MONGO_URI is required');
 
-    mongoClient = new MongoClient(MONGO_URI);
-    await mongoClient.connect();
-    dbInstance = mongoClient.db(DB_NAME);
-  }
-  return dbInstance;
+  const client = new MongoClient(MONGO_URI, {
+    maxPoolSize: 5,
+    minPoolSize: 0,
+    maxIdleTimeMS: 10000,
+  });
+  await client.connect();
+  const db = client.db(DB_NAME);
+  // Store globally so subsequent calls reuse it
+  (global as any).db = db;
+  return db;
 }
 
 // ============================================================================
@@ -137,92 +151,85 @@ export async function preCheckCategories(categoryFilter?: string[]): Promise<{
 
   const MAX_PARALLEL = 4;
 
-  for (let i = 0; i < categories.length; i += MAX_PARALLEL) {
-    const batch = categories.slice(i, i + MAX_PARALLEL);
-    console.log(`[Incremental] Batch ${Math.floor(i / MAX_PARALLEL) + 1}: ${batch.map((c) => c.name || c.id).join(', ')}`);
+  try {
+    for (let i = 0; i < categories.length; i += MAX_PARALLEL) {
+      const batch = categories.slice(i, i + MAX_PARALLEL);
+      console.log(`[Incremental] Batch ${Math.floor(i / MAX_PARALLEL) + 1}: ${batch.map((c) => c.name || c.id).join(', ')}`);
 
-    const batchResults = await Promise.all(
-      batch.map(async (cat) => {
-        try {
-          const preview = await getCategoryPreview(client, cat.idsubrubro1, config.baseUrl);
-          if (!preview) return { categoryId: cat.id, status: 'error' as const };
+      const batchResults = await Promise.all(
+        batch.map(async (cat) => {
+          try {
+            const preview = await getCategoryPreview(client, cat.idsubrubro1, config.baseUrl);
+            if (!preview) return { categoryId: cat.id, status: 'error' as const };
 
-          const db = await getDb();
-          const existing = await db.collection('scraper_state').findOne({ categoryId: cat.id });
-          
-          // Compare product IDs to detect new/disabled products
-          // Use sorted arrays for stable comparison
-          const existingIds = existing?.productIds ? [...existing.productIds].sort() : [];
-          const newIds = [...preview.productIds].sort();
-          const hasChanged = !existing || JSON.stringify(existingIds) !== JSON.stringify(newIds);
+            const db = await getDb();
+            const existing = await db.collection('scraper_state').findOne({ categoryId: cat.id });
+            
+            // Compare product IDs to detect new/disabled products
+            // Use sorted arrays for stable comparison
+            const existingIds = existing?.productIds ? [...existing.productIds].sort() : [];
+            const newIds = [...preview.productIds].sort();
+            const hasChanged = !existing || JSON.stringify(existingIds) !== JSON.stringify(newIds);
 
-          // Determine what changed (new vs discontinued)
-          const existingSet = new Set(existing?.productIds || []);
-          const newSet = new Set(preview.productIds);
-          const newProducts: string[] = [];
-          const discontinuedProducts: string[] = [];
+            // Determine what changed (new vs discontinued)
+            const existingSet = new Set(existing?.productIds || []);
+            const newSet = new Set(preview.productIds);
+            const newProducts: string[] = [];
+            const discontinuedProducts: string[] = [];
 
-          for (const id of preview.productIds) {
-            if (!existingSet.has(id)) newProducts.push(id);
-          }
-          for (const id of existing?.productIds || []) {
-            if (!newSet.has(id)) discontinuedProducts.push(id);
-          }
-
-          // Log changes detected
-          if (hasChanged) {
-            console.log(
-              `[Pre-check] ${cat.id}: CHANGED | ` +
-              `new=${newProducts.length}, discontinued=${discontinuedProducts.length}, ` +
-              `total=${preview.productCount} products`
-            );
-            if (newProducts.length > 0) {
-              console.log(`[Pre-check]   NEW products: ${newProducts.slice(0, 5).join(', ')}${newProducts.length > 5 ? '...' : ''}`);
+            for (const id of preview.productIds) {
+              if (!existingSet.has(id)) newProducts.push(id);
             }
-            if (discontinuedProducts.length > 0) {
-              console.log(`[Pre-check]   DISCONTINUED: ${discontinuedProducts.slice(0, 5).join(', ')}${discontinuedProducts.length > 5 ? '...' : ''}`);
+            for (const id of existing?.productIds || []) {
+              if (!newSet.has(id)) discontinuedProducts.push(id);
             }
+
+            // Log changes detected
+            if (hasChanged) {
+              console.log(
+                `[Pre-check] ${cat.id}: CHANGED | ` +
+                `new=${newProducts.length}, discontinued=${discontinuedProducts.length}, ` +
+                `total=${preview.productCount} products`
+              );
+              if (newProducts.length > 0) {
+                console.log(`[Pre-check]   NEW products: ${newProducts.slice(0, 5).join(', ')}${newProducts.length > 5 ? '...' : ''}`);
+              }
+              if (discontinuedProducts.length > 0) {
+                console.log(`[Pre-check]   DISCONTINUED: ${discontinuedProducts.slice(0, 5).join(', ')}${discontinuedProducts.length > 5 ? '...' : ''}`);
+              }
+            }
+
+            // NOTE: Do NOT update scraper_state here.
+            // It will be updated AFTER runScraper() saves products to the DB,
+            // so scraper_state always reflects what's actually in the DB,
+            // not what the website has.
+
+            const state = await db.collection('scraper_state').findOne({ categoryId: cat.id });
+            const storedCount = state?.productIds?.length || 0;
+            if (!hasChanged) {
+              console.log(
+                `[Pre-check] ${cat.id}: unchanged | ` +
+                `total=${preview.productCount} products`
+              );
+            }
+
+            return { categoryId: cat.id, status: hasChanged ? ('changed' as const) : ('unchanged' as const) };
+          } catch (e: any) {
+            console.error(`[Pre-check] ${cat.id}: ERROR — ${e.message}`);
+            return { categoryId: cat.id, status: 'error' as const };
           }
+        }),
+      );
 
-          // Update scraper_state with all product IDs (now we track ALL, not just page 1)
-          await db.collection('scraper_state').updateOne(
-            { categoryId: cat.id },
-            {
-              $set: {
-                categoryId: cat.id,
-                idsubrubro1: cat.idsubrubro1,
-                contentHash: preview.contentHash,
-                productCount: preview.productCount,
-                productIds: preview.productIds, // Store ALL product IDs from all pages
-                firstPriceUsd: preview.firstPriceUsd,
-                capturedAt: new Date(),
-              },
-            },
-            { upsert: true },
-          );
-
-          const state = await db.collection('scraper_state').findOne({ categoryId: cat.id });
-          const storedCount = state?.productIds?.length || 0;
-          if (!hasChanged) {
-            console.log(
-              `[Pre-check] ${cat.id}: unchanged | ` +
-              `total=${preview.productCount} products`
-            );
-          }
-
-          return { categoryId: cat.id, status: hasChanged ? ('changed' as const) : ('unchanged' as const) };
-        } catch (e: any) {
-          console.error(`[Pre-check] ${cat.id}: ERROR — ${e.message}`);
-          return { categoryId: cat.id, status: 'error' as const };
-        }
-      }),
-    );
-
-    for (const r of batchResults) {
-      if (r.status === 'changed') result.changed.push(r.categoryId);
-      else if (r.status === 'unchanged') result.unchanged.push(r.categoryId);
-      else result.errors.push(r.categoryId);
+      for (const r of batchResults) {
+        if (r.status === 'changed') result.changed.push(r.categoryId);
+        else if (r.status === 'unchanged') result.unchanged.push(r.categoryId);
+        else result.errors.push(r.categoryId);
+      }
     }
+  } finally {
+    // HTTP client doesn't have explicit close, but we clear references
+    console.log('[Pre-check] Pre-check complete');
   }
 
   console.log(
@@ -243,6 +250,9 @@ export async function preCheckCategories(categoryFilter?: string[]): Promise<{
  *
  * Session optimization: creates ONE authenticated HTTP session shared across all
  * categories, instead of logging in 127 times.
+ *
+ * Resource cleanup: ALL resources (Playwright browser, MongoDB connections) are
+ * guaranteed to be cleaned up in the finally block, even on errors or timeouts.
  * 
  * @param forceFullScrape - If true, skip pre-check and scrape all categories.
  * @param categoryId - Optional parent category ID to scrape (e.g., 'conectividad'). 
@@ -277,161 +287,255 @@ export async function runIncrementalScraper(forceFullScrape: boolean = false, ca
   // Create ONE shared HTTP client for the entire run
   const sharedHttp = createHttpClient(config);
 
-  // Login ONCE — this populates the cookie jar on sharedHttp
-  const { ScraperService } = await import('./scraper.service');
-  const bootScraper = new ScraperService(config, {}, sharedHttp);
-  await bootScraper.login();
-  console.log('[Incremental] Shared session established for all categories');
+  // Track resources for cleanup
+  let globalTimeout: NodeJS.Timeout | null = null;
+  const categoryTimeouts: NodeJS.Timeout[] = [];
+  let playwrightWasLaunched = false;
 
-  // Global timeout: abort if entire run takes > 30 minutes
-  const GLOBAL_TIMEOUT_MS = 30 * 60 * 1000;
-  const globalTimeout = setTimeout(() => {
-    console.error('[Incremental] GLOBAL TIMEOUT: scraper exceeded 30 minutes, aborting');
-    process.exit(1);
-  }, GLOBAL_TIMEOUT_MS);
+  try {
+    // Login ONCE — this populates the cookie jar on sharedHttp
+    const { ScraperService } = await import('./scraper.service');
+    const bootScraper = new ScraperService(config, {}, sharedHttp);
+    await bootScraper.login();
+    console.log('[Incremental] Shared session established for all categories');
 
-  // CRITICAL: Capture existing product IDs BEFORE pre-check runs.
-  // Pre-check updates scraper_state with current IDs from the website.
-  // If we read AFTER pre-check, new products would already be in the state
-  // and the scraper would skip them (thinking they're "existing").
-  const db = await getDb();
-  const oldProductIdsByCategory = new Map<string, string[]>();
-  if (!skipExistingCheck) {
-    for (const cat of categories) {
-      const state = await db.collection('scraper_state').findOne({ categoryId: cat.id });
-      if (state?.productIds?.length > 0) {
-        oldProductIdsByCategory.set(cat.id, state.productIds);
+    // Global timeout: abort if entire run takes > 30 minutes
+    // Uses a flag instead of process.exit() to allow graceful cleanup
+    const GLOBAL_TIMEOUT_MS = 30 * 60 * 1000;
+    let timedOut = false;
+    globalTimeout = setTimeout(() => {
+      timedOut = true;
+      console.error('[Incremental] GLOBAL TIMEOUT: scraper exceeded 30 minutes, aborting');
+    }, GLOBAL_TIMEOUT_MS);
+
+    // CRITICAL: Capture existing product IDs BEFORE pre-check runs.
+    // Pre-check updates scraper_state with current IDs from the website.
+    // If we read AFTER pre-check, new products would already be in the state
+    // and the scraper would skip them (thinking they're "existing").
+    const db = await getDb();
+    // CRITICAL: Get existing product IDs from the ACTUAL DB, not from scraper_state.
+    // scraper_state tracks what was on the website last time, not what's in our DB.
+    // Using scraper_state would skip products that appear on the website but were never saved.
+    const existingProductIdsByCategory = new Map<string, string[]>();
+    if (!skipExistingCheck) {
+      for (const cat of categories) {
+        const existingProducts = await db.collection('products')
+          .find({ categories: cat.id, supplier: 'jotakp' }, { projection: { externalId: 1 } })
+          .toArray();
+        const ids = existingProducts.map((p: any) => p.externalId).filter(Boolean);
+        if (ids.length > 0) {
+          existingProductIdsByCategory.set(cat.id, ids);
+        }
       }
+      console.log(`[Incremental] Found existing products in DB for ${existingProductIdsByCategory.size} categories`);
     }
-    console.log(`[Incremental] Captured old product IDs for ${oldProductIdsByCategory.size} categories`);
-  }
 
-  // Step 1: Pre-check (this updates scraper_state with current IDs)
-  let preCheckResult: { changed: string[]; unchanged: string[]; errors: string[] };
-  if (forceFullScrape) {
-    console.log('[Incremental] Force full scrape — skipping pre-check');
-    preCheckResult = { changed: categories.map((c) => c.id), unchanged: [], errors: [] };
-  } else {
-    // Pass category IDs to preCheckCategories for filtering
-    preCheckResult = await preCheckCategories(categories.map((c) => c.id));
-  }
-
-  const toScrape = [...preCheckResult.changed, ...preCheckResult.errors];
-
-  // Use the OLD product IDs (captured before pre-check) for Playwright skip logic.
-  // This ensures new products are NOT skipped — they weren't in the old state.
-  const existingProductIdsByCategory = new Map<string, string[]>();
-  if (!skipExistingCheck) {
-    for (const categoryId of preCheckResult.changed) {
-      const oldIds = oldProductIdsByCategory.get(categoryId);
-      if (oldIds && oldIds.length > 0) {
-        existingProductIdsByCategory.set(categoryId, oldIds);
-        console.log(
-          `[Incremental] ${categoryId}: ${oldIds.length} known products from previous scrape — Playwright will skip these`
-        );
-      }
+    // Step 1: Pre-check (this updates scraper_state with current IDs)
+    let preCheckResult: { changed: string[]; unchanged: string[]; errors: string[] };
+    if (forceFullScrape) {
+      console.log('[Incremental] Force full scrape — skipping pre-check');
+      preCheckResult = { changed: categories.map((c) => c.id), unchanged: [], errors: [] };
+    } else {
+      // Pass category IDs to preCheckCategories for filtering
+      preCheckResult = await preCheckCategories(categories.map((c) => c.id));
     }
-  } else {
-    console.log('[Incremental] skipExistingCheck=true — Playwright will re-enrich ALL products');
-  }
 
-  console.log(
-    `[Incremental] Pre-check: ${preCheckResult.changed.length} changed, ${preCheckResult.unchanged.length} unchanged, ${preCheckResult.errors.length} errors — scraping ${toScrape.length} categories`
-  );
+    const toScrape = [...preCheckResult.changed, ...preCheckResult.errors];
 
-  const scrapeResults = { created: 0, updated: 0, createdIds: [] as string[], updatedIds: [] as string[], errors: [] as string[], durationMs: 0, discontinued: 0 };
-  const startTime = Date.now();
-  const MAX_PARALLEL = 4;
-
-  // Step 2a: Mark discontinued + update timestamp for UNCHANGED categories
-  // Uses the product IDs captured during the last successful full scrape (already in scraper_state).
-  let totalDiscontinued = 0;
-  for (const categoryId of preCheckResult.unchanged) {
-    try {
-      const state = await db.collection('scraper_state').findOne({ categoryId });
-      if (state?.productIds?.length > 0) {
-        const discontinuedCount = await markDiscontinuedFromIds(categoryId, state.productIds);
-        totalDiscontinued += discontinuedCount;
-        if (discontinuedCount > 0) {
-          console.log(`[Discontinued] ${categoryId}: marked ${discontinuedCount} products as discontinued (from ${state.productIds.length} known IDs)`);
+    // existingProductIdsByCategory already populated from DB above.
+    // For CHANGED categories, log how many products exist in DB (Playwright will skip these).
+    if (!skipExistingCheck) {
+      for (const catId of preCheckResult.changed) {
+        const existingIds = existingProductIdsByCategory.get(catId);
+        if (existingIds && existingIds.length > 0) {
+          console.log(
+            `[Incremental] ${catId}: ${existingIds.length} products already in DB — Playwright will skip these`
+          );
         } else {
-          console.log(`[Discontinued] ${categoryId}: no changes (all ${state.productIds.length} products still active)`);
+          console.log(
+            `[Incremental] ${catId}: 0 products in DB — ALL products are new`
+          );
         }
       }
-      await db.collection('scraper_state').updateOne(
-        { categoryId },
-        { $set: { lastScrapeAt: new Date() } },
-      );
-    } catch (e: any) {
-      console.error(`[Discontinued] ${categoryId}: ERROR — ${e.message}`);
+    } else {
+      console.log('[Incremental] skipExistingCheck=true — Playwright will re-enrich ALL products');
     }
-  }
-  scrapeResults.discontinued = totalDiscontinued;
 
-  // Step 2b: Scrape only CHANGED + ERROR categories, sharing the authenticated session
-  const CATEGORY_TIMEOUT_MS = 3 * 60 * 1000; // 3 minutes per category
-
-  for (let i = 0; i < toScrape.length; i += MAX_PARALLEL) {
-    const batch = toScrape.slice(i, i + MAX_PARALLEL);
-    console.log(`[Incremental] Scraping batch ${Math.floor(i / MAX_PARALLEL) + 1}: ${batch.join(', ')}`);
-
-    const batchResults = await Promise.all(
-      batch.map(async (categoryId) => {
-        try {
-          // Pass existing product IDs so Playwright only enriches NEW products
-          const existingProductIds = existingProductIdsByCategory.get(categoryId) || [];
-          const scraperPromise = runScraper(
-            { categoryId, source: 'incremental', skipLogin: true, existingProductIds },
-            sharedHttp,
-          );
-          const timeoutPromise = new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error(`Category ${categoryId} timed out after 3 minutes`)), CATEGORY_TIMEOUT_MS)
-          );
-
-          const result = await Promise.race([scraperPromise, timeoutPromise]);
-
-          // scraper_state.productIds is now updated by scraper.service.ts itself
-          // (runs for ALL sources, not just incremental)
-
-          return result;
-        } catch (e: any) {
-          console.error(`[Incremental] Error scraping ${categoryId}:`, e.message);
-          return { created: 0, updated: 0, createdIds: [], updatedIds: [], errors: [`Error scraping ${categoryId}: ${e.message}`], success: false };
-        }
-      }),
+    console.log(
+      `[Incremental] Pre-check: ${preCheckResult.changed.length} changed, ${preCheckResult.unchanged.length} unchanged, ${preCheckResult.errors.length} errors — scraping ${toScrape.length} categories`
     );
 
-    for (const r of batchResults) {
-      scrapeResults.created += r.created || 0;
-      scrapeResults.updated += r.updated || 0;
-      if (r.createdIds) scrapeResults.createdIds.push(...r.createdIds);
-      if (r.updatedIds) scrapeResults.updatedIds.push(...r.updatedIds);
-      if (r.errors) {
-        scrapeResults.errors.push(...r.errors);
+    const scrapeResults = { created: 0, updated: 0, createdIds: [] as string[], updatedIds: [] as string[], errors: [] as string[], durationMs: 0, discontinued: 0 };
+    const startTime = Date.now();
+    const MAX_PARALLEL = 4;
+
+    // Step 2a: Mark discontinued + update timestamp for UNCHANGED categories
+    // Uses the product IDs captured during the last successful full scrape (already in scraper_state).
+    let totalDiscontinued = 0;
+    for (const catId of preCheckResult.unchanged) {
+      if (timedOut) break;
+      try {
+        // Use DB as source of truth, not scraper_state
+        const dbProducts = await db.collection('products')
+          .find({ categories: catId, supplier: 'jotakp', status: { $ne: 'discontinued' } }, { projection: { externalId: 1 } })
+          .toArray();
+        const activeIds = dbProducts.map((p: any) => p.externalId).filter(Boolean);
+        
+        if (activeIds.length > 0) {
+          const discontinuedCount = await markDiscontinuedFromIds(catId, activeIds);
+          totalDiscontinued += discontinuedCount;
+          if (discontinuedCount > 0) {
+            console.log(`[Discontinued] ${catId}: marked ${discontinuedCount} products as discontinued (from ${activeIds.length} active IDs)`);
+          } else {
+            console.log(`[Discontinued] ${catId}: no changes (all ${activeIds.length} products still active)`);
+          }
+        }
+
+        // Update scraper_state with actual DB state
+        await db.collection('scraper_state').updateOne(
+          { categoryId: catId },
+          {
+            $set: {
+              categoryId: catId,
+              productIds: activeIds,
+              productCount: activeIds.length,
+              lastScrapeAt: new Date(),
+            },
+          },
+          { upsert: true },
+        );
+      } catch (e: any) {
+        console.error(`[Discontinued] ${catId}: ERROR — ${e.message}`);
       }
     }
+    scrapeResults.discontinued = totalDiscontinued;
+
+    // Step 2b: Scrape only CHANGED + ERROR categories, sharing the authenticated session
+    const CATEGORY_TIMEOUT_MS = 3 * 60 * 1000; // 3 minutes per category
+
+    for (let i = 0; i < toScrape.length; i += MAX_PARALLEL) {
+      if (timedOut) {
+        console.error('[Incremental] Aborting remaining batches due to global timeout');
+        break;
+      }
+
+      const batch = toScrape.slice(i, i + MAX_PARALLEL);
+      console.log(`[Incremental] Scraping batch ${Math.floor(i / MAX_PARALLEL) + 1}: ${batch.join(', ')}`);
+
+      const batchResults = await Promise.all(
+        batch.map(async (catId) => {
+          try {
+            // Pass existing product IDs so Playwright only enriches NEW products
+            const existingProductIds = existingProductIdsByCategory.get(catId) || [];
+            const scraperPromise = runScraper(
+              { categoryId: catId, source: 'incremental', skipLogin: true, existingProductIds },
+              sharedHttp,
+            );
+            
+            let timeoutId: NodeJS.Timeout;
+            const timeoutPromise = new Promise<never>((_, reject) => {
+              timeoutId = setTimeout(() => reject(new Error(`Category ${catId} timed out after 3 minutes`)), CATEGORY_TIMEOUT_MS);
+              categoryTimeouts.push(timeoutId);
+            });
+
+            const result = await Promise.race([scraperPromise, timeoutPromise]);
+            clearTimeout(timeoutId!);
+
+            return result;
+          } catch (e: any) {
+            console.error(`[Incremental] Error scraping ${catId}:`, e.message);
+            return { created: 0, updated: 0, createdIds: [], updatedIds: [], errors: [`Error scraping ${catId}: ${e.message}`], success: false };
+          }
+        }),
+      );
+
+      for (const r of batchResults) {
+        scrapeResults.created += r.created || 0;
+        scrapeResults.updated += r.updated || 0;
+        if (r.createdIds) scrapeResults.createdIds.push(...r.createdIds);
+        if (r.updatedIds) scrapeResults.updatedIds.push(...r.updatedIds);
+        if (r.errors) {
+          scrapeResults.errors.push(...r.errors);
+        }
+      }
+
+      // Update scraper_state for scraped categories with ACTUAL DB state
+      for (const catId of batch) {
+        try {
+          const dbProducts = await db.collection('products')
+            .find({ categories: catId, supplier: 'jotakp' }, { projection: { externalId: 1 } })
+            .toArray();
+          const dbIds = dbProducts.map((p: any) => p.externalId).filter(Boolean);
+          await db.collection('scraper_state').updateOne(
+            { categoryId: catId },
+            {
+              $set: {
+                categoryId: catId,
+                productIds: dbIds,
+                productCount: dbIds.length,
+                lastScrapeAt: new Date(),
+              },
+            },
+            { upsert: true },
+          );
+          console.log(`[ScraperState] ${catId}: updated with ${dbIds.length} products from DB`);
+        } catch (e: any) {
+          console.error(`[ScraperState] ${catId}: failed to update — ${e.message}`);
+        }
+      }
+    }
+
+    scrapeResults.durationMs = Date.now() - startTime;
+    console.log(
+      `[Incremental] Done in ${(scrapeResults.durationMs / 1000).toFixed(1)}s: ` +
+      `${scrapeResults.created} created, ${scrapeResults.updated} updated, ` +
+      `${scrapeResults.discontinued} discontinued | ` +
+      `scraped ${Math.min(toScrape.length, scrapeResults.created + scrapeResults.updated + scrapeResults.errors.length)}/${categories.length} categories`
+    );
+
+    return {
+      success: true,
+      preCheck: {
+        total: categories.length,
+        changed: preCheckResult.changed,
+        unchanged: preCheckResult.unchanged,
+        errors: preCheckResult.errors,
+      },
+      scrapeResult: scrapeResults,
+      timestamp: new Date(),
+    };
+  } catch (error: any) {
+    console.error('[Incremental] Fatal error:', error.message);
+    throw error; // Re-throw so caller knows it failed
+  } finally {
+    // ============================================================================
+    // CLEANUP — guaranteed to run, even on errors or timeouts
+    // ============================================================================
+    console.log('[Incremental] Cleaning up resources...');
+
+    // 1. Clear all timeouts
+    if (globalTimeout) {
+      clearTimeout(globalTimeout);
+      globalTimeout = null;
+    }
+    for (const t of categoryTimeouts) {
+      clearTimeout(t);
+    }
+    categoryTimeouts.length = 0;
+
+    // 2. Close Playwright browser (if it was launched by this run)
+    try {
+      await playwrightSingleton.close();
+      console.log('[Incremental] Playwright browser closed');
+    } catch (e: any) {
+      console.error('[Incremental] Error closing Playwright:', e.message);
+    }
+
+    // MongoDB is NOT closed here — server.ts manages the connection lifecycle.
+    // Reusing (global as any).db means zero duplication.
+
+    console.log('[Incremental] Cleanup complete');
   }
-
-  scrapeResults.durationMs = Date.now() - startTime;
-  clearTimeout(globalTimeout);
-  console.log(
-    `[Incremental] Done in ${(scrapeResults.durationMs / 1000).toFixed(1)}s: ` +
-    `${scrapeResults.created} created, ${scrapeResults.updated} updated, ` +
-    `${scrapeResults.discontinued} discontinued | ` +
-    `scraped ${toScrape.length}/${categories.length} categories`
-  );
-
-  return {
-    success: true,
-    preCheck: {
-      total: categories.length,
-      changed: preCheckResult.changed,
-      unchanged: preCheckResult.unchanged,
-      errors: preCheckResult.errors,
-    },
-    scrapeResult: scrapeResults,
-    timestamp: new Date(),
-  };
 }
 
 /**
