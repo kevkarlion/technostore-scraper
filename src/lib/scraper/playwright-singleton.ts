@@ -83,8 +83,7 @@ class PlaywrightSingleton {
         '--disable-default-apps',
         '--disable-sync',
         '--disable-translate',
-        '--single-process',
-        '--js-flags=--max-old-space-size=256',
+        '--js-flags=--max-old-space-size=512',
       ],
     });
 
