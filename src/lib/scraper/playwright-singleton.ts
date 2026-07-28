@@ -135,8 +135,10 @@ class PlaywrightSingleton {
         console.log('[PlaywrightSingleton] Login submitted');
       }
 
-      // Navigate to site to establish session
-      await page.goto(baseUrl, { waitUntil: 'networkidle', timeout: 15000 });
+      // Navigate to site to establish session.
+      // domcontentloaded is enough — networkidle may never fire on slow sites
+      // with lazy-loaded content. Session cookies are set on DOM load.
+      await page.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
 
       // Select branch (Cipolletti, Id=1)
       const branchOk = await page.evaluate(async () => {
@@ -441,7 +443,7 @@ class PlaywrightSingleton {
 
       // Debug: log sample texts that didn't match (first 3)
       const debugTexts = await page.evaluate(() => {
-        const links = document.querySelectorAll('a[href*=\"articulo.aspx?id=\"]');
+        const links = document.querySelectorAll('a[href*="articulo.aspx?id="]');
         const samples: string[] = [];
         links.forEach((link, i) => {
           if (i < 3) {
@@ -454,6 +456,19 @@ class PlaywrightSingleton {
       });
       if (extracted.length === 0 && debugTexts.length > 0) {
         console.log('[DEBUG] No prices found. Sample texts: ' + debugTexts.join(' | '));
+      }
+
+      // Debug: if no links at all, check what page we got
+      if (debugTexts.length === 0) {
+        const pageInfo = await page.evaluate(() => ({
+          title: document.title,
+          url: window.location.href,
+          bodyStart: document.body?.innerText?.substring(0, 200) || '',
+        }));
+        console.log(`[WARNING] extractListingPrices: no product links found on page ${pageNum}`);
+        console.log(`  Title: "${pageInfo.title}"`);
+        console.log(`  URL: ${pageInfo.url}`);
+        console.log(`  Body start: "${pageInfo.bodyStart}"`);
       }
 
       for (const item of extracted) {

@@ -531,7 +531,12 @@ const name = fullText.replace(/U\$D\s*[\d.,]+(\s*\+\s*IVA\s*[\d.]+%)*(\$\s*[\d.,
               const maxPages = 20;
               for (let pageNum = 1; pageNum <= maxPages; pageNum++) {
                 const pagePrices = await playwrightSingleton.extractListingPrices(cat.idsubrubro1, pageNum);
-                if (pagePrices.size === 0) break;
+                if (pagePrices.size === 0) {
+                  if (pageNum === 1) {
+                    console.log(`[WARNING] ${cat.id}: 0 listing prices on page 1 — either no products or session issue`);
+                  }
+                  break;
+                }
                 for (const [id, price] of pagePrices) {
                   listingPrices.set(id, price);
                 }
