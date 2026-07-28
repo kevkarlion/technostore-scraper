@@ -38,6 +38,7 @@ class PlaywrightSingleton {
   private lastFailureTime = 0;
   private readonly FAILURE_THRESHOLD = 3; // Restart after 3 consecutive failures
   private readonly FAILURE_WINDOW_MS = 60000; // Within 1 minute
+  private savedCredentials?: { email: string; password: string };
 
   private constructor() {}
 
@@ -114,6 +115,9 @@ class PlaywrightSingleton {
     }
 
     this.baseUrl = baseUrl;
+    if (credentials) {
+      this.savedCredentials = credentials;
+    }
     const page = await this.context.newPage();
 
     try {
@@ -181,6 +185,11 @@ class PlaywrightSingleton {
       console.warn('[PlaywrightSingleton] Browser not launched — restarting...');
       await this.close();
       await this.launch();
+      // Re-login after restart
+      if (this.baseUrl && this.savedCredentials) {
+        this.initialized = false;
+        await this.initSession(this.baseUrl, this.savedCredentials);
+      }
     }
     if (!this.context) throw new Error('Browser not launched after restart');
     return this.context.newPage();
@@ -223,6 +232,11 @@ class PlaywrightSingleton {
       console.log(`[PlaywrightSingleton] Too many failures (${this.failureCount}), restarting browser...`);
       await this.close();
       await this.launch();
+      // Re-login after restart — session is lost
+      if (this.baseUrl && this.savedCredentials) {
+        this.initialized = false;
+        await this.initSession(this.baseUrl, this.savedCredentials);
+      }
       this.failureCount = 0;
       return true;
     }
