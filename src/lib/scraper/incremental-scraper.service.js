@@ -60,43 +60,38 @@ const config_1 = require("./config");
 const scraper_service_1 = require("./scraper.service");
 const http_client_1 = require("./http-client");
 const playwright_singleton_1 = require("./playwright-singleton");
+const image_downloader_1 = require("./image-downloader");
+const data_transformer_1 = require("./data-transformer");
 // ============================================================================
-// PERSISTENT STORE (same singleton pattern as scraper.service)
+// DATABASE — reuse server.ts singleton via (global as any).db
 // ============================================================================
-let dbInstance = null;
-let mongoClient = null;
+/**
+ * Get the shared MongoDB database instance from server.ts.
+ * NEVER creates its own MongoClient — avoids connection duplication.
+ * server.ts must be running (it sets (global as any).db on boot).
+ */
 async function getDb() {
     if (global.db) {
         return global.db;
     }
-    if (!dbInstance) {
-        const { MongoClient } = await Promise.resolve().then(() => __importStar(require('mongodb')));
-        const MONGO_URI = process.env.MONGO_URI || process.env.MONGODB_URI;
-        const DB_NAME = process.env.DB_NAME || process.env.MONGODB_DB_NAME || 'ecommerce';
-        if (!MONGO_URI)
-            throw new Error('MONGO_URI is required');
-        mongoClient = new MongoClient(MONGO_URI);
-        await mongoClient.connect();
-        dbInstance = mongoClient.db(DB_NAME);
-    }
-    return dbInstance;
-}
-/**
- * Close MongoDB connection if this module opened it.
- * Does NOT close the global connection from server.ts.
- */
-async function closeMongoConnection() {
-    if (mongoClient) {
-        try {
-            await mongoClient.close();
-            console.log('[Incremental] MongoDB connection closed');
-        }
-        catch (e) {
-            console.error('[Incremental] Error closing MongoDB:', e.message);
-        }
-        mongoClient = null;
-        dbInstance = null;
-    }
+    // Fallback: if called outside server.ts context (e.g. standalone script),
+    // create a one-shot connection. This path should NOT be hit in production.
+    console.warn('[Incremental] global.db not found — creating temporary connection');
+    const { MongoClient } = await Promise.resolve().then(() => __importStar(require('mongodb')));
+    const MONGO_URI = process.env.MONGO_URI || process.env.MONGODB_URI;
+    const DB_NAME = process.env.DB_NAME || process.env.MONGODB_DB_NAME || 'ecommerce';
+    if (!MONGO_URI)
+        throw new Error('MONGO_URI is required');
+    const client = new MongoClient(MONGO_URI, {
+        maxPoolSize: 5,
+        minPoolSize: 0,
+        maxIdleTimeMS: 10000,
+    });
+    await client.connect();
+    const db = client.db(DB_NAME);
+    // Store globally so subsequent calls reuse it
+    global.db = db;
+    return db;
 }
 // ============================================================================
 // PRE-CHECK CATEGORIES
@@ -288,23 +283,16 @@ async function runIncrementalScraper(forceFullScrape = false, categoryId, skipEx
     // Create ONE shared HTTP client for the entire run
     const sharedHttp = (0, http_client_1.createHttpClient)(config);
     // Track resources for cleanup
-    let globalTimeout = null;
     const categoryTimeouts = [];
-    let playwrightWasLaunched = false;
     try {
         // Login ONCE — this populates the cookie jar on sharedHttp
         const { ScraperService } = await Promise.resolve().then(() => __importStar(require('./scraper.service')));
         const bootScraper = new ScraperService(config, {}, sharedHttp);
         await bootScraper.login();
         console.log('[Incremental] Shared session established for all categories');
-        // Global timeout: abort if entire run takes > 30 minutes
-        // Uses a flag instead of process.exit() to allow graceful cleanup
-        const GLOBAL_TIMEOUT_MS = 30 * 60 * 1000;
-        let timedOut = false;
-        globalTimeout = setTimeout(() => {
-            timedOut = true;
-            console.error('[Incremental] GLOBAL TIMEOUT: scraper exceeded 30 minutes, aborting');
-        }, GLOBAL_TIMEOUT_MS);
+        // No global timeout — let it run as long as needed.
+        // scraper_state is updated after each category, so a crash mid-way
+        // resumes naturally on the next run (pre-check re-detects unprocessed categories).
         // CRITICAL: Capture existing product IDs BEFORE pre-check runs.
         // Pre-check updates scraper_state with current IDs from the website.
         // If we read AFTER pre-check, new products would already be in the state
@@ -356,13 +344,11 @@ async function runIncrementalScraper(forceFullScrape = false, categoryId, skipEx
         console.log(`[Incremental] Pre-check: ${preCheckResult.changed.length} changed, ${preCheckResult.unchanged.length} unchanged, ${preCheckResult.errors.length} errors — scraping ${toScrape.length} categories`);
         const scrapeResults = { created: 0, updated: 0, createdIds: [], updatedIds: [], errors: [], durationMs: 0, discontinued: 0 };
         const startTime = Date.now();
-        const MAX_PARALLEL = 4;
+        const RESTART_PLAYWRIGHT_EVERY = 20; // Restart browser every N categories to prevent memory buildup
         // Step 2a: Mark discontinued + update timestamp for UNCHANGED categories
         // Uses the product IDs captured during the last successful full scrape (already in scraper_state).
         let totalDiscontinued = 0;
         for (const catId of preCheckResult.unchanged) {
-            if (timedOut)
-                break;
             try {
                 // Use DB as source of truth, not scraper_state
                 const dbProducts = await db.collection('products')
@@ -394,67 +380,193 @@ async function runIncrementalScraper(forceFullScrape = false, categoryId, skipEx
             }
         }
         scrapeResults.discontinued = totalDiscontinued;
-        // Step 2b: Scrape only CHANGED + ERROR categories, sharing the authenticated session
-        const CATEGORY_TIMEOUT_MS = 3 * 60 * 1000; // 3 minutes per category
-        for (let i = 0; i < toScrape.length; i += MAX_PARALLEL) {
-            if (timedOut) {
-                console.error('[Incremental] Aborting remaining batches due to global timeout');
-                break;
+        // Step 2b: Scrape changed + error categories SEQUENTIALLY (less memory pressure)
+        const CATEGORY_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes per category
+        const allProducts = []; // dry-run accumulator
+        const allCategoryIds = new Set(); // track which categories were processed
+        for (let i = 0; i < toScrape.length; i++) {
+            const catId = toScrape[i];
+            console.log(`[Incremental] Scraping ${i + 1}/${toScrape.length}: ${catId}`);
+            try {
+                const existingProductIds = existingProductIdsByCategory.get(catId) || [];
+                const scraperPromise = (0, scraper_service_1.runScraper)({ categoryId: catId, source: 'incremental', skipLogin: true, existingProductIds, dryRun: true, keepBrowserOpen: true }, sharedHttp);
+                let timeoutId;
+                const timeoutPromise = new Promise((_, reject) => {
+                    timeoutId = setTimeout(() => reject(new Error(`Category ${catId} timed out after 5 minutes`)), CATEGORY_TIMEOUT_MS);
+                    categoryTimeouts.push(timeoutId);
+                });
+                const result = await Promise.race([scraperPromise, timeoutPromise]);
+                clearTimeout(timeoutId);
+                scrapeResults.created += result.created || 0;
+                scrapeResults.updated += result.updated || 0;
+                if (result.createdIds)
+                    scrapeResults.createdIds.push(...result.createdIds);
+                if (result.updatedIds)
+                    scrapeResults.updatedIds.push(...result.updatedIds);
+                if (result.errors)
+                    scrapeResults.errors.push(...result.errors);
+                // Accumulate products from dry-run mode
+                if (result.products && result.products.length > 0) {
+                    allProducts.push(...result.products);
+                    allCategoryIds.add(catId);
+                }
+                console.log(`[Incremental] ${catId}: ${result.products?.length || 0} products accumulated`);
             }
-            const batch = toScrape.slice(i, i + MAX_PARALLEL);
-            console.log(`[Incremental] Scraping batch ${Math.floor(i / MAX_PARALLEL) + 1}: ${batch.join(', ')}`);
-            const batchResults = await Promise.all(batch.map(async (catId) => {
+            catch (e) {
+                console.error(`[Incremental] Error scraping ${catId}:`, e.message);
+                scrapeResults.errors.push(`Error scraping ${catId}: ${e.message}`);
+            }
+            // Restart Playwright every N categories to prevent memory buildup
+            if ((i + 1) % RESTART_PLAYWRIGHT_EVERY === 0 && i + 1 < toScrape.length) {
                 try {
-                    // Pass existing product IDs so Playwright only enriches NEW products
-                    const existingProductIds = existingProductIdsByCategory.get(catId) || [];
-                    const scraperPromise = (0, scraper_service_1.runScraper)({ categoryId: catId, source: 'incremental', skipLogin: true, existingProductIds }, sharedHttp);
-                    let timeoutId;
-                    const timeoutPromise = new Promise((_, reject) => {
-                        timeoutId = setTimeout(() => reject(new Error(`Category ${catId} timed out after 3 minutes`)), CATEGORY_TIMEOUT_MS);
-                        categoryTimeouts.push(timeoutId);
-                    });
-                    const result = await Promise.race([scraperPromise, timeoutPromise]);
-                    clearTimeout(timeoutId);
-                    return result;
+                    console.log(`[Incremental] Restarting Playwright after ${i + 1} categories...`);
+                    await playwright_singleton_1.playwrightSingleton.close();
                 }
                 catch (e) {
-                    console.error(`[Incremental] Error scraping ${catId}:`, e.message);
-                    return { created: 0, updated: 0, createdIds: [], updatedIds: [], errors: [`Error scraping ${catId}: ${e.message}`], success: false };
-                }
-            }));
-            for (const r of batchResults) {
-                scrapeResults.created += r.created || 0;
-                scrapeResults.updated += r.updated || 0;
-                if (r.createdIds)
-                    scrapeResults.createdIds.push(...r.createdIds);
-                if (r.updatedIds)
-                    scrapeResults.updatedIds.push(...r.updatedIds);
-                if (r.errors) {
-                    scrapeResults.errors.push(...r.errors);
-                }
-            }
-            // Update scraper_state for scraped categories with ACTUAL DB state
-            for (const catId of batch) {
-                try {
-                    const dbProducts = await db.collection('products')
-                        .find({ categories: catId, supplier: 'jotakp' }, { projection: { externalId: 1 } })
-                        .toArray();
-                    const dbIds = dbProducts.map((p) => p.externalId).filter(Boolean);
-                    await db.collection('scraper_state').updateOne({ categoryId: catId }, {
-                        $set: {
-                            categoryId: catId,
-                            productIds: dbIds,
-                            productCount: dbIds.length,
-                            lastScrapeAt: new Date(),
-                        },
-                    }, { upsert: true });
-                    console.log(`[ScraperState] ${catId}: updated with ${dbIds.length} products from DB`);
-                }
-                catch (e) {
-                    console.error(`[ScraperState] ${catId}: failed to update — ${e.message}`);
+                    console.error(`[Incremental] Error restarting Playwright: ${e.message}`);
                 }
             }
         }
+        // ============================================================================
+        // BATCH SAVE: validate all products, then save + update scraper_state atomically
+        // ============================================================================
+        console.log(`\n[Incremental] Batch save: ${allProducts.length} total products accumulated from ${allCategoryIds.size} categories`);
+        const saveErrors = [];
+        const savedIds = [];
+        let savedCount = 0;
+        let updatedCount = 0;
+        let skippedCount = 0;
+        if (allProducts.length === 0) {
+            const msg = allCategoryIds.size > 0
+                ? 'Categories were processed but no products had valid price data'
+                : 'No categories had changes to save';
+            saveErrors.push(msg);
+            console.warn(`[Incremental] ${msg}`);
+        }
+        for (const product of allProducts) {
+            // Validate required fields
+            if (!product.externalId) {
+                saveErrors.push('Product missing externalId — skipping');
+                skippedCount++;
+                continue;
+            }
+            if (!product.priceRaw) {
+                saveErrors.push(`[VALIDATION] ${product.externalId}: no priceRaw — skipping`);
+                skippedCount++;
+                continue;
+            }
+            try {
+                const costPrice = (0, data_transformer_1.parsePrice)(product.priceRaw);
+                if (costPrice <= 0) {
+                    saveErrors.push(`[VALIDATION] ${product.externalId}: invalid price (${product.priceRaw}) — skipping`);
+                    skippedCount++;
+                    continue;
+                }
+                const upsertPayload = {
+                    externalId: product.externalId,
+                    name: product.name,
+                    categories: product.categories,
+                    costPrice,
+                    currency: 'USD',
+                };
+                if (product.stock > 0)
+                    upsertPayload.stock = product.stock;
+                if (product.sku)
+                    upsertPayload.sku = product.sku;
+                if (product.description)
+                    upsertPayload.description = product.description;
+                if (product.imageUrls?.length > 0)
+                    upsertPayload.imageUrls = product.imageUrls;
+                const result = await scraper_service_1.productRepository.atomicUpsertByExternalId(upsertPayload);
+                if (result.created || result.updated) {
+                    savedCount++;
+                    if (result.created)
+                        scrapeResults.createdIds.push(product.externalId);
+                    if (result.updated) {
+                        updatedCount++;
+                        scrapeResults.updatedIds.push(product.externalId);
+                    }
+                    savedIds.push(product.externalId);
+                }
+            }
+            catch (e) {
+                saveErrors.push(`Error saving product ${product.externalId}: ${e.message}`);
+            }
+        }
+        // Upload images to Cloudinary for newly created products
+        for (const product of allProducts) {
+            if (!product.imageUrls?.length)
+                continue;
+            if (!scrapeResults.createdIds.includes(product.externalId))
+                continue;
+            try {
+                const cloudUrls = await (0, image_downloader_1.uploadProductImages)(product.imageUrls, 'jotakp', product.externalId);
+                product.cloudinaryUrls = cloudUrls;
+                await db.collection('products').updateOne({ externalId: product.externalId, supplier: 'jotakp' }, { $set: { imageUrls: cloudUrls, updatedAt: new Date() } });
+            }
+            catch {
+                // Image upload is optional
+            }
+        }
+        // Mark discontinued for changed categories (dryRun skips this in runScraper)
+        const allExternalIdsByCategory = new Map();
+        for (const product of allProducts) {
+            for (const catId of product.categories) {
+                if (!allExternalIdsByCategory.has(catId))
+                    allExternalIdsByCategory.set(catId, []);
+                allExternalIdsByCategory.get(catId).push(product.externalId);
+            }
+        }
+        for (const [catId, scrapedIds] of allExternalIdsByCategory) {
+            try {
+                // Combine scraped IDs with existing DB IDs for this category
+                const existingIds = existingProductIdsByCategory.get(catId) || [];
+                const allActiveIds = [...new Set([...existingIds, ...scrapedIds])];
+                const discontinued = await scraper_service_1.productRepository.markDiscontinued(catId, allActiveIds);
+                if (discontinued > 0) {
+                    console.log(`[Discontinued] ${catId}: ${discontinued} products marked`);
+                    totalDiscontinued += discontinued;
+                }
+            }
+            catch (e) {
+                console.error(`[Discontinued] ${catId}: ERROR — ${e.message}`);
+            }
+        }
+        scrapeResults.discontinued = totalDiscontinued;
+        // Update scraper_state for ALL accumulated categories
+        for (const catId of allCategoryIds) {
+            try {
+                const dbProducts = await db.collection('products')
+                    .find({ categories: catId, supplier: 'jotakp' }, { projection: { externalId: 1 } })
+                    .toArray();
+                const dbIds = dbProducts.map((p) => p.externalId).filter(Boolean);
+                await db.collection('scraper_state').updateOne({ categoryId: catId }, {
+                    $set: {
+                        categoryId: catId,
+                        productIds: dbIds,
+                        productCount: dbIds.length,
+                        lastScrapeAt: new Date(),
+                    },
+                }, { upsert: true });
+                console.log(`[ScraperState] ${catId}: updated with ${dbIds.length} products from DB`);
+            }
+            catch (e) {
+                console.error(`[ScraperState] ${catId}: failed to update — ${e.message}`);
+            }
+        }
+        // Also update scraper_state for unchanged categories (mark discontinued)
+        // This already happens in Step 2a above, so no need to repeat.
+        // Log validation errors
+        if (saveErrors.length > 0) {
+            console.warn(`[Incremental] ${saveErrors.length} validation/save issues:`);
+            for (const err of saveErrors) {
+                console.warn(`  ${err}`);
+                scrapeResults.errors.push(err);
+            }
+        }
+        scrapeResults.created = savedCount;
+        console.log(`[Incremental] Batch save complete: ${savedCount} saved, ${skippedCount} skipped ` +
+            `(${saveErrors.length - skippedCount} errors)`);
         scrapeResults.durationMs = Date.now() - startTime;
         console.log(`[Incremental] Done in ${(scrapeResults.durationMs / 1000).toFixed(1)}s: ` +
             `${scrapeResults.created} created, ${scrapeResults.updated} updated, ` +
@@ -481,11 +593,7 @@ async function runIncrementalScraper(forceFullScrape = false, categoryId, skipEx
         // CLEANUP — guaranteed to run, even on errors or timeouts
         // ============================================================================
         console.log('[Incremental] Cleaning up resources...');
-        // 1. Clear all timeouts
-        if (globalTimeout) {
-            clearTimeout(globalTimeout);
-            globalTimeout = null;
-        }
+        // 1. Clear category timeouts
         for (const t of categoryTimeouts) {
             clearTimeout(t);
         }
@@ -498,8 +606,8 @@ async function runIncrementalScraper(forceFullScrape = false, categoryId, skipEx
         catch (e) {
             console.error('[Incremental] Error closing Playwright:', e.message);
         }
-        // 3. Close MongoDB connection (if this module opened it)
-        await closeMongoConnection();
+        // MongoDB is NOT closed here — server.ts manages the connection lifecycle.
+        // Reusing (global as any).db means zero duplication.
         console.log('[Incremental] Cleanup complete');
     }
 }

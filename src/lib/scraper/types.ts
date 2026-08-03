@@ -130,6 +130,8 @@ export interface ScraperRunRequest {
   existingProductIds?: string[];
   /** If true, skip DB writes and return accumulated products in result */
   dryRun?: boolean;
+  /** Keep the Playwright singleton browser alive after run() — used by the incremental loop, which closes it once at the end of the whole run */
+  keepBrowserOpen?: boolean;
 }
 
 /**

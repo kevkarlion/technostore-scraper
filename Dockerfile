@@ -33,6 +33,9 @@ RUN npm prune --production
 # Force Playwright to use the default cache path (not /tmp from .env)
 ENV PLAYWRIGHT_BROWSERS_PATH=/root/.cache/ms-playwright
 
+# Cap Node heap — Railway containers are ~512MB; an unconstrained heap OOM-SIGKILLs the process
+ENV NODE_OPTIONS="--max-old-space-size=384"
+
 EXPOSE 3001
 
 CMD ["node", "server.js"]

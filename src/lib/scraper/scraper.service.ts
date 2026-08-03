@@ -722,8 +722,10 @@ const name = fullText.replace(/U\$D\s*[\d.,]+(\s*\+\s*IVA\s*[\d.]+%)*(\$\s*[\d.,
       errors.push(`Fatal error: ${e.message}`);
       console.error('[Scraper] Fatal error:', e);
     } finally {
-      // Close Playwright singleton (will be reused across runs if needed)
-      if (playwrightReady) {
+      // Close the singleton browser for standalone/single-category runs.
+      // The incremental loop passes keepBrowserOpen: true so the browser
+      // survives across categories and is closed once at the end of the run.
+      if (playwrightReady && !this.request.keepBrowserOpen) {
         await playwrightSingleton.close();
       }
     }

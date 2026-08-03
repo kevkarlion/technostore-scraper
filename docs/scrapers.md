@@ -138,6 +138,48 @@ Stored in MongoDB `scraper_state` collection:
 
 **Purpose**: Track which products were processed to detect new/discontinued on next run.
 
+### Dry-Run / Batch Save
+
+El Incremental Scraper no guarda productos categoría por categoría. En cambio, usa un **modo dry-run** que acumula todos los productos extraídos y los guarda **en batch al final**.
+
+**Flujo actual:**
+
+```
+1. PRE-CHECK (Axios + Cheerio)
+   └─ Detecta qué categorías cambiaron
+
+2. SCRAPE EN DRY-RUN (Playwright)
+   ├─ Itera categorías SECUENCIALMENTE (1 por vez)
+   ├─ Cada categoría llama a runScraper con dryRun: true
+   │   └─ runScraper SKIPEA: upsert, Cloudinary, discontinued, scraper_state
+   │   └─ Acumula productos en accumulatedProducts[]
+   ├─ Reinicia Playwright cada RESTART_PLAYWRIGHT_EVERY categorías
+   └─ Acumula TODOS los productos en allProducts[]
+
+3. BATCH SAVE
+   ├─ Valida cada producto:
+   │   ├─ externalId requerido
+   │   ├─ priceRaw requerido
+   │   └─ parsePrice(priceRaw) > 0 (precio inválido → salta)
+   ├─ Guarda válidos con productRepository.atomicUpsertByExternalId()
+   ├─ Sube imágenes a Cloudinary (solo productos nuevos)
+   ├─ Marca discontinued para categorías scrapeadas
+   └─ Actualiza scraper_state para categorías scrapeadas
+
+4. UPDATE SCRAPER STATE
+   └─ Actualiza scraper_state con IDs reales de la DB
+```
+
+**Ventajas:**
+- Si crashea a mitad, no quedan categorías parcialmente guardadas
+- Se pueden validar precios antes de persistir
+- Una sola transacción lógica por categoría
+
+**Archivos modificados:**
+- `src/lib/scraper/types.ts` — `dryRun` field en `ScraperRunRequest`, `products` field en `ScraperResult`
+- `src/lib/scraper/scraper.service.ts` — `if (!isDryRun)` envuelve saves/Cloudinary/discontinued/scraper_state
+- `src/lib/scraper/incremental-scraper.service.ts` — batch save loop después del scraping
+
 ---
 
 ## Price Handling

@@ -52,7 +52,7 @@ class PlaywrightSingleton {
   async launch(): Promise<void> {
     // Already launched
     if (this.browser) return;
-    
+
     // Prevent concurrent launches
     if (this.launchPromise) {
       await this.launchPromise;
@@ -60,8 +60,11 @@ class PlaywrightSingleton {
     }
 
     this.launchPromise = this._doLaunch();
-    await this.launchPromise;
-    this.launchPromise = null;
+    try {
+      await this.launchPromise;
+    } finally {
+      this.launchPromise = null;
+    }
   }
 
   private async _doLaunch(): Promise<void> {
@@ -71,7 +74,7 @@ class PlaywrightSingleton {
     // Don't hardcode chromium version — it changes on every Playwright update.
     console.log('[PlaywrightSingleton] Launching browser');
 
-    this.browser = await chromium.launch({
+    const browser = await chromium.launch({
       headless: true,
       args: [
         '--no-sandbox',
@@ -84,11 +87,18 @@ class PlaywrightSingleton {
         '--disable-default-apps',
         '--disable-sync',
         '--disable-translate',
-        '--js-flags=--max-old-space-size=512',
+        '--js-flags=--max-old-space-size=256',
       ],
     });
 
-    this.context = await this.browser.newContext();
+    try {
+      const context = await browser.newContext();
+      this.browser = browser;
+      this.context = context;
+    } catch (e) {
+      await browser.close().catch(() => {});
+      throw e;
+    }
     console.log('[PlaywrightSingleton] Browser launched successfully');
   }
 
@@ -105,8 +115,11 @@ class PlaywrightSingleton {
     }
 
     this.initPromise = this._doInitSession(baseUrl, credentials);
-    await this.initPromise;
-    this.initPromise = null;
+    try {
+      await this.initPromise;
+    } finally {
+      this.initPromise = null;
+    }
   }
 
   private async _doInitSession(baseUrl: string, credentials?: { email: string; password: string }): Promise<void> {

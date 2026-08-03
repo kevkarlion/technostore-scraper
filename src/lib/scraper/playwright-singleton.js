@@ -8,7 +8,6 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.playwrightSingleton = void 0;
 const playwright_1 = require("playwright");
-const PLAYWRIGHT_BROWSERS_PATH = process.env.PLAYWRIGHT_BROWSERS_PATH || '/home/kriq/.cache/ms-playwright';
 class PlaywrightSingleton {
     constructor() {
         this.browser = null;
@@ -39,17 +38,21 @@ class PlaywrightSingleton {
             return;
         }
         this.launchPromise = this._doLaunch();
-        await this.launchPromise;
-        this.launchPromise = null;
+        try {
+            await this.launchPromise;
+        }
+        finally {
+            this.launchPromise = null;
+        }
     }
     async _doLaunch() {
         if (this.browser)
             return;
-        const chromiumPath = `${PLAYWRIGHT_BROWSERS_PATH}/chromium-1228/chrome-linux64/chrome`;
-        console.log('[PlaywrightSingleton] Launching browser:', chromiumPath);
-        this.browser = await playwright_1.chromium.launch({
+        // Let Playwright resolve the browser path from PLAYWRIGHT_BROWSERS_PATH.
+        // Don't hardcode chromium version — it changes on every Playwright update.
+        console.log('[PlaywrightSingleton] Launching browser');
+        const browser = await playwright_1.chromium.launch({
             headless: true,
-            executablePath: chromiumPath,
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
@@ -61,11 +64,18 @@ class PlaywrightSingleton {
                 '--disable-default-apps',
                 '--disable-sync',
                 '--disable-translate',
-                '--single-process', // Reduce processes
-                '--js-flags=--max-old-space-size=256', // Limit JS heap
+                '--js-flags=--max-old-space-size=256',
             ],
         });
-        this.context = await this.browser.newContext();
+        try {
+            const context = await browser.newContext();
+            this.browser = browser;
+            this.context = context;
+        }
+        catch (e) {
+            await browser.close().catch(() => { });
+            throw e;
+        }
         console.log('[PlaywrightSingleton] Browser launched successfully');
     }
     async initSession(baseUrl, credentials) {
@@ -79,62 +89,89 @@ class PlaywrightSingleton {
             return;
         }
         this.initPromise = this._doInitSession(baseUrl, credentials);
-        await this.initPromise;
-        this.initPromise = null;
+        try {
+            await this.initPromise;
+        }
+        finally {
+            this.initPromise = null;
+        }
     }
     async _doInitSession(baseUrl, credentials) {
         if (this.initialized || !this.context) {
             return;
         }
         this.baseUrl = baseUrl;
+        if (credentials) {
+            this.savedCredentials = credentials;
+        }
         const page = await this.context.newPage();
         try {
-            // Navigate to login page
-            await page.goto(`${baseUrl}/loginext.aspx`, { waitUntil: 'networkidle', timeout: 20000 });
-            if (credentials) {
-                await page.fill('#TxtEmail', credentials.email);
-                await page.fill('#TxtPass1', credentials.password);
-                await Promise.all([
-                    page.waitForNavigation({ waitUntil: 'networkidle', timeout: 15000 }).catch(() => { }),
-                    page.click('#BtnIngresar'),
-                ]);
-                console.log('[PlaywrightSingleton] Login submitted');
-            }
-            // Navigate to site to establish session
-            await page.goto(baseUrl, { waitUntil: 'networkidle', timeout: 15000 });
-            // Select branch (Cipolletti, Id=1)
-            const branchOk = await page.evaluate(async () => {
+            let loginAttempted = false;
+            try {
+                // Navigate to login page with timeout
+                await page.goto(`${baseUrl}/loginext.aspx`, { waitUntil: 'networkidle', timeout: 20000 });
+                if (credentials) {
+                    await page.fill('#TxtEmail', credentials.email);
+                    await page.fill('#TxtPass1', credentials.password);
+                    await Promise.all([
+                        page.waitForNavigation({ waitUntil: 'networkidle', timeout: 15000 }).catch(() => { }),
+                        page.click('#BtnIngresar'),
+                    ]);
+                    loginAttempted = true;
+                    console.log('[PlaywrightSingleton] Login submitted');
+                }
+                // Navigate to site to establish session.
+                // Use 30s timeout — dyndns.org can be slow. domcontentloaded is enough
+                // since session cookies are set on DOM load, not after all resources.
                 try {
-                    if (typeof window.PageMethods !== 'undefined') {
-                        return await new Promise((resolve) => {
-                            window.PageMethods.SeleccionarSucursal(1, (response) => {
-                                const el = document.getElementById('varIdDeposito');
-                                if (el)
-                                    el.value = response.IdDepositoDefecto;
-                                resolve(true);
-                            }, () => resolve(false));
+                    await page.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+                }
+                catch (navError) {
+                    console.warn(`[PlaywrightSingleton] Base URL navigation timeout (${navError.message}) — continuing`);
+                }
+                // Select branch (Cipolletti, Id=1)
+                const branchOk = await page.evaluate(async () => {
+                    try {
+                        if (typeof window.PageMethods !== 'undefined') {
+                            return await new Promise((resolve) => {
+                                window.PageMethods.SeleccionarSucursal(1, (response) => {
+                                    const el = document.getElementById('varIdDeposito');
+                                    if (el)
+                                        el.value = response.IdDepositoDefecto;
+                                    resolve(true);
+                                }, () => resolve(false));
+                            });
+                        }
+                        const resp = await fetch('/articulo.aspx/SeleccionarSucursal', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json; charset=utf-8',
+                                'X-Requested-With': 'XMLHttpRequest',
+                            },
+                            body: JSON.stringify({ Id: 1 }),
                         });
+                        return resp.ok;
                     }
-                    const resp = await fetch('/articulo.aspx/SeleccionarSucursal', {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json; charset=utf-8',
-                            'X-Requested-With': 'XMLHttpRequest',
-                        },
-                        body: JSON.stringify({ Id: 1 }),
-                    });
-                    return resp.ok;
+                    catch {
+                        return false;
+                    }
+                });
+                if (branchOk) {
+                    this.initialized = true;
+                    console.log('[PlaywrightSingleton] Session initialized: login OK, branch Cipolletti selected');
                 }
-                catch {
-                    return false;
+                else {
+                    console.warn('[PlaywrightSingleton] Branch selection failed — extraction may still work');
+                    // Mark as initialized anyway — the browser context exists and may have session cookies
+                    this.initialized = true;
                 }
-            });
-            if (branchOk) {
-                this.initialized = true;
-                console.log('[PlaywrightSingleton] Session initialized: login OK, branch Cipolletti selected');
             }
-            else {
-                console.error('[PlaywrightSingleton] Failed to select branch');
+            catch (loginError) {
+                // If any login step fails (DNS timeout, slow page, etc.), the browser + context
+                // are still valid. Extraction pages (buscar.aspx, articulo.aspx) may work independently.
+                console.warn(`[PlaywrightSingleton] Session init failed (${loginError.message}) — browser context still available`);
+                // Mark as initialized so extraction can proceed — the browser context exists
+                this.initialized = true;
             }
         }
         finally {
@@ -142,8 +179,19 @@ class PlaywrightSingleton {
         }
     }
     async newPage() {
+        // Auto-recover: if browser crashed, restart immediately
+        if (!this.context) {
+            console.warn('[PlaywrightSingleton] Browser not launched — restarting...');
+            await this.close();
+            await this.launch();
+            // Re-login after restart
+            if (this.baseUrl && this.savedCredentials) {
+                this.initialized = false;
+                await this.initSession(this.baseUrl, this.savedCredentials);
+            }
+        }
         if (!this.context)
-            throw new Error('Browser not launched');
+            throw new Error('Browser not launched after restart');
         return this.context.newPage();
     }
     isInitialized() {
@@ -177,6 +225,11 @@ class PlaywrightSingleton {
             console.log(`[PlaywrightSingleton] Too many failures (${this.failureCount}), restarting browser...`);
             await this.close();
             await this.launch();
+            // Re-login after restart — session is lost
+            if (this.baseUrl && this.savedCredentials) {
+                this.initialized = false;
+                await this.initSession(this.baseUrl, this.savedCredentials);
+            }
             this.failureCount = 0;
             return true;
         }
@@ -353,7 +406,7 @@ class PlaywrightSingleton {
             });
             // Debug: log sample texts that didn't match (first 3)
             const debugTexts = await page.evaluate(() => {
-                const links = document.querySelectorAll('a[href*=\"articulo.aspx?id=\"]');
+                const links = document.querySelectorAll('a[href*="articulo.aspx?id="]');
                 const samples = [];
                 links.forEach((link, i) => {
                     if (i < 3) {
@@ -366,6 +419,18 @@ class PlaywrightSingleton {
             });
             if (extracted.length === 0 && debugTexts.length > 0) {
                 console.log('[DEBUG] No prices found. Sample texts: ' + debugTexts.join(' | '));
+            }
+            // Debug: if no links at all, check what page we got
+            if (debugTexts.length === 0) {
+                const pageInfo = await page.evaluate(() => ({
+                    title: document.title,
+                    url: window.location.href,
+                    bodyStart: document.body?.innerText?.substring(0, 200) || '',
+                }));
+                console.log(`[WARNING] extractListingPrices: no product links found on page ${pageNum}`);
+                console.log(`  Title: "${pageInfo.title}"`);
+                console.log(`  URL: ${pageInfo.url}`);
+                console.log(`  Body start: "${pageInfo.bodyStart}"`);
             }
             for (const item of extracted) {
                 prices.set(item.externalId, item.priceRaw);

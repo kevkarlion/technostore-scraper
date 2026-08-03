@@ -437,6 +437,7 @@ class ScraperService {
         const updatedIds = [];
         const errors = [];
         const categoryExternalIds = {};
+        const accumulatedProducts = []; // dryRun accumulator
         let playwrightReady = false;
         try {
             // Login first (skip if using a pre-authenticated shared session)
@@ -476,8 +477,12 @@ class ScraperService {
                             const maxPages = 20;
                             for (let pageNum = 1; pageNum <= maxPages; pageNum++) {
                                 const pagePrices = await playwright_singleton_1.playwrightSingleton.extractListingPrices(cat.idsubrubro1, pageNum);
-                                if (pagePrices.size === 0)
+                                if (pagePrices.size === 0) {
+                                    if (pageNum === 1) {
+                                        console.log(`[WARNING] ${cat.id}: 0 listing prices on page 1 — either no products or session issue`);
+                                    }
                                     break;
+                                }
                                 for (const [id, price] of pagePrices) {
                                     listingPrices.set(id, price);
                                 }
@@ -525,104 +530,110 @@ class ScraperService {
                             `${skippedCount} existing skipped | ` +
                             `total=${products.length} products found`);
                     }
-                    // Save products to DB
-                    // NOTE: Only Playwright-enriched products have real price/stock data.
-                    // Listing-only products only have name + listing images.
-                    // For incremental scraper: skip products that already exist (they were already saved)
+                    // Save products to DB (skip in dryRun mode — incremental collects all and saves at end)
                     const isIncremental = this.request.source === 'incremental';
-                    for (const product of products) {
-                        // Skip existing products in incremental mode - they were already saved
-                        if (isIncremental && existingIds.has(product.externalId)) {
-                            continue;
+                    const isDryRun = this.request.dryRun === true;
+                    if (!isDryRun) {
+                        for (const product of products) {
+                            // Skip existing products in incremental mode - they were already saved
+                            if (isIncremental && existingIds.has(product.externalId)) {
+                                continue;
+                            }
+                            // Skip products without price — incomplete data is worse than missing
+                            if (isIncremental && !product.priceRaw) {
+                                console.log(`[SKIP] ${product.externalId}: no priceRaw — not saving incomplete product`);
+                                continue;
+                            }
+                            try {
+                                const upsertPayload = {
+                                    externalId: product.externalId,
+                                    name: product.name,
+                                    categories: [cat.id],
+                                };
+                                if (product.priceRaw) {
+                                    upsertPayload.costPrice = this.parsePrice(product.priceRaw);
+                                    upsertPayload.currency = 'USD';
+                                }
+                                if (product.stock > 0) {
+                                    upsertPayload.stock = product.stock;
+                                }
+                                if (product.sku) {
+                                    upsertPayload.sku = product.sku;
+                                }
+                                if (product.description) {
+                                    upsertPayload.description = product.description;
+                                }
+                                const images = product.cloudinaryUrls?.length > 0
+                                    ? product.cloudinaryUrls
+                                    : product.imageUrls;
+                                if (images?.length > 0) {
+                                    upsertPayload.imageUrls = images;
+                                }
+                                console.log(`[Upsert] ${product.externalId}: ` +
+                                    `costPrice=${upsertPayload.costPrice ?? 'N/A'}, ` +
+                                    `images=${upsertPayload.imageUrls?.length ?? 0}` +
+                                    `${upsertPayload.sku ? `, sku=${upsertPayload.sku}` : ''}` +
+                                    `${upsertPayload.stock ? `, stock=${upsertPayload.stock}` : ''}`);
+                                const result = await exports.productRepository.atomicUpsertByExternalId(upsertPayload);
+                                if (result.created) {
+                                    created++;
+                                    createdIds.push(product.externalId);
+                                }
+                                if (result.updated) {
+                                    updated++;
+                                    updatedIds.push(product.externalId);
+                                }
+                            }
+                            catch (e) {
+                                errors.push(`Error saving product ${product.externalId}: ${e.message}`);
+                            }
                         }
-                        // TEMPORARY: Skip products without price only if isIncremental AND no priceRaw
-                        // TODO: re-enable after debugging price extraction
-                        // if (isIncremental && !product.priceRaw) {
-                        //   console.log(`[WARNING] ${product.externalId}: skipped - no priceRaw at save time`);
-                        //   continue;
-                        // }
+                        // Upload images to Cloudinary after upsert, so we know if it's a create or update.
+                        const isFullScrape = this.request.source !== 'incremental';
+                        for (const product of products) {
+                            if (product.imageUrls.length === 0)
+                                continue;
+                            if (!isFullScrape && !createdIds.includes(product.externalId))
+                                continue;
+                            try {
+                                const cloudUrls = await (0, image_downloader_1.uploadProductImages)(product.imageUrls, this.config.supplier, product.externalId);
+                                product.cloudinaryUrls = cloudUrls;
+                                const db = await getDb();
+                                await db.collection('products').updateOne({ externalId: product.externalId, supplier: 'jotakp' }, { $set: { imageUrls: cloudUrls, updatedAt: new Date() } });
+                            }
+                            catch {
+                                // Image upload is optional — keep raw supplier URLs in DB
+                            }
+                        }
+                        // Mark discontinued
+                        if (externalIds.length > 0) {
+                            const discontinued = await exports.productRepository.markDiscontinued(cat.id, externalIds);
+                            if (discontinued > 0) {
+                                console.log(`[Scraper] Marked ${discontinued} products as discontinued in ${cat.id}`);
+                            }
+                        }
+                        // Update scraper_state
                         try {
-                            const upsertPayload = {
-                                externalId: product.externalId,
-                                name: product.name,
-                                categories: [cat.id],
-                            };
-                            // Only include fields that have real data (not listing defaults)
-                            // price from supplier → stored as costPrice. Backend computes sale price.
-                            if (product.priceRaw) {
-                                upsertPayload.costPrice = this.parsePrice(product.priceRaw);
-                                upsertPayload.currency = 'USD';
-                            }
-                            if (product.stock > 0) {
-                                upsertPayload.stock = product.stock;
-                            }
-                            if (product.sku) {
-                                upsertPayload.sku = product.sku;
-                            }
-                            if (product.description) {
-                                upsertPayload.description = product.description;
-                            }
-                            const images = product.cloudinaryUrls?.length > 0
-                                ? product.cloudinaryUrls
-                                : product.imageUrls;
-                            if (images?.length > 0) {
-                                upsertPayload.imageUrls = images;
-                            }
-                            console.log(`[Upsert] ${product.externalId}: ` +
-                                `costPrice=${upsertPayload.costPrice ?? 'N/A'}, ` +
-                                `images=${upsertPayload.imageUrls?.length ?? 0}` +
-                                `${upsertPayload.sku ? `, sku=${upsertPayload.sku}` : ''}` +
-                                `${upsertPayload.stock ? `, stock=${upsertPayload.stock}` : ''}`);
-                            const result = await exports.productRepository.atomicUpsertByExternalId(upsertPayload);
-                            if (result.created) {
-                                created++;
-                                createdIds.push(product.externalId);
-                            }
-                            if (result.updated) {
-                                updated++;
-                                updatedIds.push(product.externalId);
-                            }
+                            const db = await getDb();
+                            await db.collection('scraper_state').updateOne({ categoryId: cat.id }, { $set: { productIds: externalIds, lastScrapeAt: new Date() } }, { upsert: true });
                         }
                         catch (e) {
-                            errors.push(`Error saving product ${product.externalId}: ${e.message}`);
+                            console.error(`[Scraper] ${cat.id}: failed to update scraper_state:`, e.message);
                         }
                     }
-                    // Upload images to Cloudinary after upsert, so we know if it's a create or update.
-                    // - Full scrape (source !== 'incremental'): upload for ALL products with images.
-                    // - Incremental: upload ONLY for newly created products (existing products keep
-                    //   their Cloudinary URLs from the first full scrape).
-                    const isFullScrape = this.request.source !== 'incremental';
-                    for (const product of products) {
-                        if (product.imageUrls.length === 0)
-                            continue;
-                        if (!isFullScrape && !createdIds.includes(product.externalId))
-                            continue;
-                        try {
-                            const cloudUrls = await (0, image_downloader_1.uploadProductImages)(product.imageUrls, this.config.supplier, product.externalId);
-                            product.cloudinaryUrls = cloudUrls;
-                            // Update the DB record with Cloudinary URLs
-                            const db = await getDb();
-                            await db.collection('products').updateOne({ externalId: product.externalId, supplier: 'jotakp' }, { $set: { imageUrls: cloudUrls, updatedAt: new Date() } });
+                    else {
+                        console.log(`[DryRun] ${cat.id}: ${products.length} products accumulated (not saved yet)`);
+                        // Collect enriched products for batch save
+                        for (const product of products) {
+                            // Skip existing in incremental dryRun
+                            if (isIncremental && existingIds.has(product.externalId))
+                                continue;
+                            if (isIncremental && !product.priceRaw)
+                                continue;
+                            // Tag with category for batch saving
+                            product.categories = [cat.id];
+                            accumulatedProducts.push(product);
                         }
-                        catch {
-                            // Image upload is optional — keep raw supplier URLs in DB
-                        }
-                    }
-                    // Mark discontinued
-                    if (externalIds.length > 0) {
-                        const discontinued = await exports.productRepository.markDiscontinued(cat.id, externalIds);
-                        if (discontinued > 0) {
-                            console.log(`[Scraper] Marked ${discontinued} products as discontinued in ${cat.id}`);
-                        }
-                    }
-                    // Update scraper_state.productIds so incremental skips these products next time
-                    // This runs for ALL scraper sources (incremental, full, test-category, etc.)
-                    try {
-                        const db = await getDb();
-                        await db.collection('scraper_state').updateOne({ categoryId: cat.id }, { $set: { productIds: externalIds, lastScrapeAt: new Date() } }, { upsert: true });
-                    }
-                    catch (e) {
-                        console.error(`[Scraper] ${cat.id}: failed to update scraper_state:`, e.message);
                     }
                     // Collect all external IDs found for this category (used by incremental scraper to update state)
                     categoryExternalIds[cat.id] = externalIds;
@@ -641,8 +652,10 @@ class ScraperService {
             console.error('[Scraper] Fatal error:', e);
         }
         finally {
-            // Close Playwright singleton (will be reused across runs if needed)
-            if (playwrightReady) {
+            // Close the singleton browser for standalone/single-category runs.
+            // The incremental loop passes keepBrowserOpen: true so the browser
+            // survives across categories and is closed once at the end of the run.
+            if (playwrightReady && !this.request.keepBrowserOpen) {
                 await playwright_singleton_1.playwrightSingleton.close();
             }
         }
@@ -656,6 +669,7 @@ class ScraperService {
             durationMs: Date.now() - startTime,
             timestamp: new Date(),
             categoryExternalIds,
+            products: accumulatedProducts.length > 0 ? accumulatedProducts : undefined,
         };
     }
     // ============================================================================

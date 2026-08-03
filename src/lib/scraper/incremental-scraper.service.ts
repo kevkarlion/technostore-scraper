@@ -292,7 +292,6 @@ export async function runIncrementalScraper(forceFullScrape: boolean = false, ca
 
   // Track resources for cleanup
   const categoryTimeouts: NodeJS.Timeout[] = [];
-  let playwrightWasLaunched = false;
 
   try {
     // Login ONCE — this populates the cookie jar on sharedHttp
@@ -418,7 +417,7 @@ export async function runIncrementalScraper(forceFullScrape: boolean = false, ca
       try {
         const existingProductIds = existingProductIdsByCategory.get(catId) || [];
         const scraperPromise = runScraper(
-          { categoryId: catId, source: 'incremental', skipLogin: true, existingProductIds, dryRun: true },
+          { categoryId: catId, source: 'incremental', skipLogin: true, existingProductIds, dryRun: true, keepBrowserOpen: true },
           sharedHttp,
         );
 
