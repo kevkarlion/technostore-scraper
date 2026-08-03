@@ -316,7 +316,9 @@ export async function runIncrementalScraper(forceFullScrape: boolean = false, ca
     if (!skipExistingCheck) {
       for (const cat of categories) {
         const existingProducts = await db.collection('products')
-          .find({ categories: cat.id, supplier: 'jotakp' }, { projection: { externalId: 1 } })
+          // Exclude discontinued: they must be re-scraped so a product that
+          // returns to the site gets reactivated by the upsert (status → active).
+          .find({ categories: cat.id, supplier: 'jotakp', status: { $ne: 'discontinued' } }, { projection: { externalId: 1 } })
           .toArray();
         const ids = existingProducts.map((p: any) => p.externalId).filter(Boolean);
         if (ids.length > 0) {
@@ -574,7 +576,9 @@ export async function runIncrementalScraper(forceFullScrape: boolean = false, ca
     for (const catId of allCategoryIds) {
       try {
         const dbProducts = await db.collection('products')
-          .find({ categories: catId, supplier: 'jotakp' }, { projection: { externalId: 1 } })
+          // Track only ACTIVE products: scraper_state is the pre-check baseline,
+          // so discontinued products must not mask a product that returned to the site.
+          .find({ categories: catId, supplier: 'jotakp', status: { $ne: 'discontinued' } }, { projection: { externalId: 1 } })
           .toArray();
         const dbIds = dbProducts.map((p: any) => p.externalId).filter(Boolean);
         await db.collection('scraper_state').updateOne(
