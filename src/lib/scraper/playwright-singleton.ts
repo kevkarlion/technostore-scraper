@@ -76,7 +76,7 @@ class PlaywrightSingleton {
 
     const browser = await chromium.launch({
       headless: true,
-      executablePath: '/usr/bin/chromium',
+      executablePath: process.env.CHROMIUM_PATH || undefined,
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
@@ -192,18 +192,31 @@ class PlaywrightSingleton {
         });
 
         if (branchOk) {
-          this.initialized = true;
-          console.log('[PlaywrightSingleton] Session initialized: login OK, branch Cipolletti selected');
+          console.log('[PlaywrightSingleton] Branch Cipolletti selected');
         } else {
           console.warn('[PlaywrightSingleton] Branch selection failed — extraction may still work');
-          // Mark as initialized anyway — the browser context exists and may have session cookies
-          this.initialized = true;
         }
+
+        // Warm-up: visit a listing page with conIva=1 to set session state
+        // Without this, detail pages show prices WITHOUT IVA
+        try {
+          await page.goto(`${baseUrl}/buscar.aspx?idsubrubro1=100&conIva=1`, {
+            waitUntil: 'domcontentloaded',
+            timeout: 15000,
+          });
+          console.log('[PlaywrightSingleton] IVA session set via listing warm-up');
+        } catch (warmUpError: any) {
+          console.warn(`[PlaywrightSingleton] IVA warm-up failed (${warmUpError.message}) — prices may lack IVA`);
+        }
+
+        this.initialized = true;
+        console.log('[PlaywrightSingleton] Session initialized: login OK, ready for enrichment');
       } catch (loginError: any) {
         // If any login step fails (DNS timeout, slow page, etc.), the browser + context
         // are still valid. Extraction pages (buscar.aspx, articulo.aspx) may work independently.
         console.warn(`[PlaywrightSingleton] Session init failed (${loginError.message}) — browser context still available`);
         // Mark as initialized so extraction can proceed — the browser context exists
+        // NOTE: IVA session NOT set — detail page prices may lack IVA
         this.initialized = true;
       }
     } finally {
@@ -442,15 +455,49 @@ class PlaywrightSingleton {
 
     const page = await this.newPage();
     try {
-      await page.goto(`${url}/buscar.aspx?idsubrubro1=${idsubrubro1}&pag=${pageNum}&conIva=1`, {
+      const pageUrl = `${url}/buscar.aspx?idsubrubro1=${idsubrubro1}&pag=${pageNum}&conIva=1`;
+      console.log(`[ListingDebug] cat=${idsubrubro1} page=${pageNum} → navigating`);
+      
+      await page.goto(pageUrl, {
         waitUntil: 'networkidle',
         timeout: 30000,
       });
+      console.log(`[ListingDebug] cat=${idsubrubro1} page=${pageNum} → goto done, URL=${page.url()}`);
 
-      await page.waitForSelector('a[href*="articulo.aspx?id="]', { timeout: 10000 }).catch(() => {});
+      const selectorFound = await page.waitForSelector('a[href*="articulo.aspx?id="]', { timeout: 10000 })
+        .then(() => true)
+        .catch(() => false);
+      
+      console.log(`[ListingDebug] cat=${idsubrubro1} page=${pageNum} → selector found: ${selectorFound}`);
 
       // Wait for prices to render (JS-rendered content needs extra time)
       await page.waitForTimeout(3000);
+
+      // Dump DOM state for debugging
+      const domState = await page.evaluate(() => {
+        const allLinks = document.querySelectorAll('a');
+        const artLinks = document.querySelectorAll('a[href*="articulo.aspx"]');
+        const artIdLinks = document.querySelectorAll('a[href*="articulo.aspx?id="]');
+        const buyLinks = document.querySelectorAll('a[href*="Comprar"]');
+        const divProductos = document.querySelector('#divProductos, .productos, .product-list, [class*="product"]');
+        const bodyLen = document.body?.innerHTML?.length || 0;
+        const bodySnippet = document.body?.innerHTML?.substring(0, 500) || '';
+        return {
+          totalLinks: allLinks.length,
+          artLinks: artLinks.length,
+          artIdLinks: artIdLinks.length,
+          buyLinks: buyLinks.length,
+          hasProductDiv: !!divProductos,
+          bodyHtmlLength: bodyLen,
+          bodySnippet,
+        };
+      });
+      console.log(`[ListingDebug] cat=${idsubrubro1} page=${pageNum} → DOM: links=${domState.totalLinks} artLinks=${domState.artLinks} artIdLinks=${domState.artIdLinks} buyLinks=${domState.buyLinks} productDiv=${domState.hasProductDiv} htmlLen=${domState.bodyHtmlLength}`);
+      
+      if (domState.artIdLinks === 0) {
+        console.log(`[ListingDebug] cat=${idsubrubro1} page=${pageNum} → HTML snippet (first 500ch):`);
+        console.log(domState.bodySnippet);
+      }
 
       const extracted = await page.evaluate(() => {
         const results: Array<{ externalId: string; priceRaw: string; fullText: string }> = [];
@@ -485,7 +532,7 @@ class PlaywrightSingleton {
         return samples;
       });
       if (extracted.length === 0 && debugTexts.length > 0) {
-        console.log('[DEBUG] No prices found. Sample texts: ' + debugTexts.join(' | '));
+        console.log(`[ListingDebug] cat=${idsubrubro1} page=${pageNum} → links exist but no prices: ${debugTexts.join(' | ')}`);
       }
 
       // Debug: if no links at all, check what page we got
@@ -495,7 +542,7 @@ class PlaywrightSingleton {
           url: window.location.href,
           bodyStart: document.body?.innerText?.substring(0, 200) || '',
         }));
-        console.log(`[WARNING] extractListingPrices: no product links found on page ${pageNum}`);
+        console.log(`[ListingDebug] cat=${idsubrubro1} page=${pageNum} → NO links at all`);
         console.log(`  Title: "${pageInfo.title}"`);
         console.log(`  URL: ${pageInfo.url}`);
         console.log(`  Body start: "${pageInfo.bodyStart}"`);
@@ -505,7 +552,7 @@ class PlaywrightSingleton {
         prices.set(item.externalId, item.priceRaw);
       }
 
-      console.log(`[PlaywrightSingleton] Listing prices page ${pageNum}: ${prices.size} extracted`);
+      console.log(`[ListingDebug] cat=${idsubrubro1} page=${pageNum} → DONE: ${prices.size} prices extracted`);
       
       // Reset failure counter on success
       this.resetFailureCount();

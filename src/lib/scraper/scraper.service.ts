@@ -525,45 +525,22 @@ const name = fullText.replace(/U\$D\s*[\d.,]+(\s*\+\s*IVA\s*[\d.]+%)*(\$\s*[\d.,
           const skippedCount = products.length - productsToEnrich.length;
           let enrichedCount = 0;
 
-          // Step 1: Extract prices from listing pages (with conIva=1) - reliable source
-          const listingPrices = new Map<string, string>();
+          // Enrich new products — detail page for price + desc/SKU/stock/images
+          // Price comes from detail page (always available), no listing extraction needed
           if (playwrightReady && productsToEnrich.length > 0) {
-            try {
-              const maxPages = 20;
-              for (let pageNum = 1; pageNum <= maxPages; pageNum++) {
-                const pagePrices = await playwrightSingleton.extractListingPrices(cat.idsubrubro1, pageNum);
-                if (pagePrices.size === 0) {
-                  if (pageNum === 1) {
-                    console.log(`[WARNING] ${cat.id}: 0 listing prices on page 1 — either no products or session issue`);
-                  }
-                  break;
-                }
-                for (const [id, price] of pagePrices) {
-                  listingPrices.set(id, price);
-                }
-              }
-              console.log(`[Playwright] ${cat.id}: ${listingPrices.size} listing prices extracted (with conIva=1)`);
-            } catch (e: any) {
-              console.error(`[Playwright] ${cat.id}: failed to extract listing prices:`, e.message);
-            }
-          }
-
-          // Step 2: Enrich new products — detail page for desc/SKU/stock/images, listing for price
-          if (playwrightReady && productsToEnrich.length > 0) {
+            console.log(`[Enrich] ${cat.id}: ${productsToEnrich.length} new products to enrich (detail page)`);
             for (let i = 0; i < productsToEnrich.length; i += ENRICHMENT_CONCURRENCY) {
               const batch = productsToEnrich.slice(i, i + ENRICHMENT_CONCURRENCY);
               const results = await Promise.allSettled(
                 batch.map(async (product) => {
                   const enriched = await playwrightSingleton.enrichProduct(product.externalId, this.config.baseUrl);
 
-                  // Price: MUST come from listing (with conIva=1) - no fallback
-                  const listingPrice = listingPrices.get(product.externalId);
-                  if (listingPrice) {
-                    product.priceRaw = listingPrice;
+                  // Price from detail page (with conIva=1)
+                  if (enriched.priceRaw) {
+                    product.priceRaw = enriched.priceRaw;
                   } else {
-                    // No price from listing - skip this product and log warning
-                    console.log(`[WARNING] ${product.externalId}: skipped - no price from listing (available: ${listingPrices.size} prices in cache)`);
-                    return; // Skip this product
+                    console.log(`[WARNING] ${product.externalId}: no price from detail page — skipping`);
+                    return;
                   }
 
                   // Other fields from detail page
@@ -571,6 +548,8 @@ const name = fullText.replace(/U\$D\s*[\d.,]+(\s*\+\s*IVA\s*[\d.]+%)*(\$\s*[\d.,
                   if (enriched.sku) product.sku = enriched.sku;
                   if (enriched.stock !== undefined) product.stock = enriched.stock;
                   if (enriched.imageUrls && enriched.imageUrls.length > 0) product.imageUrls = enriched.imageUrls;
+
+                  console.log(`[Enrich] ${product.externalId}: price=${enriched.priceRaw} | desc=${enriched.description?.length ?? 0}ch | stock=${enriched.stock ?? 'N/A'}`);
                 })
               );
               enrichedCount += results.filter(r => r.status === 'fulfilled').length;
@@ -582,7 +561,7 @@ const name = fullText.replace(/U\$D\s*[\d.,]+(\s*\+\s*IVA\s*[\d.]+%)*(\$\s*[\d.,
 
           if (skippedCount > 0 || enrichedCount > 0) {
             console.log(
-              `[Playwright] ${cat.id}: ${enrichedCount} enriched (×${ENRICHMENT_CONCURRENCY} parallel), ` +
+              `[Enrich] ${cat.id}: ${enrichedCount} enriched (×${ENRICHMENT_CONCURRENCY} parallel), ` +
               `${skippedCount} existing skipped | ` +
               `total=${products.length} products found`
             );
