@@ -464,8 +464,8 @@ class ScraperService {
                     console.log(`[Scraper] Processing category: ${cat.id} (${cat.idsubrubro1})`);
                     const { products, externalIds } = await this.scrapeCategory(cat.idsubrubro1);
                     // Playwright enrichment — only for NEW products (skip existing)
-                    // Runs in batches of ENRICHMENT_CONCURRENCY for parallel processing
-                    const ENRICHMENT_CONCURRENCY = 3;
+                    // Runs with LOW concurrency to avoid pthread exhaustion on Railway
+                    const ENRICHMENT_CONCURRENCY = 1; // Reduced from 3 to avoid thread limits
                     const existingIds = new Set(this.request.existingProductIds || []);
                     const productsToEnrich = products.filter(p => !existingIds.has(p.externalId));
                     const skippedCount = products.length - productsToEnrich.length;
@@ -501,6 +501,8 @@ class ScraperService {
                             for (const f of results.filter(r => r.status === 'rejected')) {
                                 console.error(`[Playwright] enrichment failed: ${f.reason?.message || f}`);
                             }
+                            // Delay between batches to let system reclaim threads
+                            await new Promise(resolve => setTimeout(resolve, 2000));
                         }
                     }
                     if (skippedCount > 0 || enrichedCount > 0) {

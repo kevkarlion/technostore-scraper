@@ -518,8 +518,8 @@ const name = fullText.replace(/U\$D\s*[\d.,]+(\s*\+\s*IVA\s*[\d.]+%)*(\$\s*[\d.,
           const { products, externalIds } = await this.scrapeCategory(cat.idsubrubro1);
 
           // Playwright enrichment — only for NEW products (skip existing)
-          // Runs in batches of ENRICHMENT_CONCURRENCY for parallel processing
-          const ENRICHMENT_CONCURRENCY = 3;
+          // Runs with LOW concurrency to avoid pthread exhaustion on Railway
+          const ENRICHMENT_CONCURRENCY = 1; // Reduced from 3 to avoid thread limits
           const existingIds = new Set(this.request.existingProductIds || []);
           const productsToEnrich = products.filter(p => !existingIds.has(p.externalId));
           const skippedCount = products.length - productsToEnrich.length;
@@ -556,6 +556,8 @@ const name = fullText.replace(/U\$D\s*[\d.,]+(\s*\+\s*IVA\s*[\d.]+%)*(\$\s*[\d.,
               for (const f of results.filter(r => r.status === 'rejected')) {
                 console.error(`[Playwright] enrichment failed: ${(f as PromiseRejectedResult).reason?.message || f}`);
               }
+              // Delay between batches to let system reclaim threads
+              await new Promise(resolve => setTimeout(resolve, 2000));
             }
           }
 

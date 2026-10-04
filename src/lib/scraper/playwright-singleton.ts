@@ -89,6 +89,9 @@ class PlaywrightSingleton {
         '--disable-sync',
         '--disable-translate',
         '--js-flags=--max-old-space-size=256',
+        '--disable-thread-site-storage', // Reduce thread usage
+        '--disable-features=TranslateUI',
+        '--single-process', // Reduce processes (may help on Railway)
       ],
     });
 
